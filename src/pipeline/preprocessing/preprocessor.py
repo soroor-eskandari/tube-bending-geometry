@@ -1,7 +1,5 @@
 from pathlib import Path
 
-import pandas as pd
-
 from src.pipeline.preprocessing.extractor import DataExtractor
 from src.pipeline.preprocessing.transformer import DataTransformer
 from src.pipeline.preprocessing.loader import DataLoader
@@ -146,25 +144,13 @@ class STLGeometryPreprocessPipeline:
         if nan_handler:
             transformer.nan_handler()
 
-        df_stl_arc = transformer.df_stl_arc
-        df_stl_lin1 = transformer.df_stl_lin1
-        df_stl_lin2 = transformer.df_stl_lin2
+        df_arc = transformer.df_arc
+        df_bending = transformer.df_bending
 
         output_path = Path(output_dir)
         output_path.mkdir(parents=True, exist_ok=True)
 
-        df_stl_arc.to_csv(output_path / "stl_arc.csv", index=False)
-        df_stl_lin1.to_csv(output_path / "stl_lin1.csv", index=False)
-        df_stl_lin2.to_csv(output_path / "stl_lin2.csv", index=False)
+        df_arc.to_csv(output_path / "geometry_data.csv", index=False)
+        df_bending.to_csv(output_path / "bending_data.csv", index=False)
+ 
 
-        linear_combined = pd.concat([df_stl_lin1, df_stl_lin2], axis=0)
-        linear_combined.to_csv(
-            output_path / "stl_linear_combined.csv", index=False
-        )
-
-        all_geometry_stl = pd.concat(
-            [df_stl_arc, df_stl_lin1, df_stl_lin2], axis=1
-        )
-        all_geometry_stl.to_csv(
-            output_path / "all_geometry_stl.csv", index=False
-        )

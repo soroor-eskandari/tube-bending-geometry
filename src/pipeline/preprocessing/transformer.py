@@ -54,92 +54,26 @@ class DataTransformer:
         """
         Retrieve geometry data, optionally filtered by experiment IDs.
 
+        Args:
+            experiment_ids (list[int] | None): List of Experiment_IDs to filter.
+                                            If None, returns all data.
+
         Returns:
-            df_arc, df_lin1, df_lin2, linear_df (lin1+lin2), all_geometry_data (arc+lin1+lin2)
+            Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+                df_arc, df_lin1, df_lin2, linear_df (lin1+lin2), all_geometry_data (arc+lin1+lin2)
         """
         if experiment_ids is None:
-            df_arc, df_lin1, df_lin2 = self.df_arc.copy(), self.df_lin1.copy(), self.df_lin2.copy()
+            df_arc, df_lin1, df_lin2 = self.df_arc, self.df_lin1, self.df_lin2
         else:
-            df_arc = self.df_arc[self.df_arc["Experiment_ID"].isin(experiment_ids)].copy()
-            df_lin1 = self.df_lin1[self.df_lin1["Experiment_ID"].isin(experiment_ids)].copy()
-            df_lin2 = self.df_lin2[self.df_lin2["Experiment_ID"].isin(experiment_ids)].copy()
+            df_arc = self.df_arc[self.df_arc["Experiment_ID"].isin(experiment_ids)]
+            df_lin1 = self.df_lin1[self.df_lin1["Experiment_ID"].isin(experiment_ids)]
+            df_lin2 = self.df_lin2[self.df_lin2["Experiment_ID"].isin(experiment_ids)]
 
-        # Reset indices to avoid duplicate index issues
-        df_arc.reset_index(drop=True, inplace=True)
-        df_lin1.reset_index(drop=True, inplace=True)
-        df_lin2.reset_index(drop=True, inplace=True)
+        linear_df = pd.concat([df_lin1, df_lin2], axis=0)
 
-        # Ensure all numeric columns are properly cast
-        for df in [df_arc, df_lin1, df_lin2]:
-            numeric_cols = df.select_dtypes(include=["float", "int", "object"]).columns
-            for col in numeric_cols:
-                try:
-                    df[col] = pd.to_numeric(df[col], errors="coerce")
-                except Exception:
-                    continue
-
-        linear_df = pd.concat([df_lin1, df_lin2], axis=0).reset_index(drop=True)
         all_geometry_data = pd.concat([df_arc, df_lin1, df_lin2], axis=1)
 
         return df_arc, df_lin1, df_lin2, linear_df, all_geometry_data
-    
-    @log_function
-    def get_stl_geometry_data(self, experiment_ids: list[int] | None = None):
-        """
-        Retrieve STL geometry data, optionally filtered by experiment IDs.
-
-        Returns:
-            df_stl_arc,
-            df_stl_lin1,
-            df_stl_lin2,
-            stl_linear_df (lin1 + lin2),
-            all_geometry_stl (arc + lin1 + lin2)
-        """
-        if experiment_ids is None:
-            df_stl_arc = self.df_stl_arc.copy()
-            df_stl_lin1 = self.df_stl_lin1.copy()
-            df_stl_lin2 = self.df_stl_lin2.copy()
-        else:
-            df_stl_arc = self.df_stl_arc[
-                self.df_stl_arc["Experiment_ID"].isin(experiment_ids)
-            ].copy()
-            df_stl_lin1 = self.df_stl_lin1[
-                self.df_stl_lin1["Experiment_ID"].isin(experiment_ids)
-            ].copy()
-            df_stl_lin2 = self.df_stl_lin2[
-                self.df_stl_lin2["Experiment_ID"].isin(experiment_ids)
-            ].copy()
-
-        # Reset indices to avoid alignment issues
-        for df in [df_stl_arc, df_stl_lin1, df_stl_lin2]:
-            df.reset_index(drop=True, inplace=True)
-
-            # Ensure numeric casting where possible
-            for col in df.columns:
-                try:
-                    df[col] = pd.to_numeric(df[col], errors="coerce")
-                except Exception:
-                    continue
-
-        # Combine linear STL geometries
-        stl_linear_df = pd.concat(
-            [df_stl_lin1, df_stl_lin2], axis=0
-        ).reset_index(drop=True)
-
-        # Combine all STL geometries
-        all_geometry_stl = pd.concat(
-            [df_stl_arc, df_stl_lin1, df_stl_lin2], axis=1
-        )
-
-        return (
-            df_stl_arc,
-            df_stl_lin1,
-            df_stl_lin2,
-            stl_linear_df,
-            all_geometry_stl,
-        )
-
-
 
     @log_function
     def get_process_data(self, experiment_ids: list[int] | None = None):
@@ -311,18 +245,18 @@ class DataTransformer:
             if len(numeric_cols) == 0:
                 logger.info(f"No numeric columns to normalize in '{attr_name}'.")
                 continue
-            '''
             
-            if attr_name == "df_arc" or attr_name == "df_lin1" or attr_name == "df_lin2":
+            
+            if attr_name == "df_lin1" or attr_name == "df_lin2":
                 df.loc[:, numeric_cols] = df.groupby("Experiment_ID")[numeric_cols].transform(
                     lambda x: (x - x.mean()) / x.std(ddof=0) if x.std(ddof=0) != 0 else 0
                 )
             
             else:
-            '''
-            df.loc[:, numeric_cols] = df.groupby("Experiment_ID")[numeric_cols].transform(
-                lambda x: (x - x.min()) / (x.max() - x.min()) if x.max() != x.min() else 0
-            )
+                #df.loc[:, numeric_cols] = df[numeric_cols].transform(
+                #    lambda x: (x - x.min()) / (x.max() - x.min()) if x.max() != x.min() else 0
+                #)
+                pass
 
             setattr(self, attr_name, df)
             logger.info(

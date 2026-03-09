@@ -3,117 +3,154 @@ from pathlib import Path
 from src.pipeline.preprocessing.extractor import DataExtractor
 from src.pipeline.preprocessing.transformer import DataTransformer
 from src.pipeline.preprocessing.loader import DataLoader
+
 from src.logging.log_utils import log_function
 
 
-class STLGeometryPreprocessPipeline:
+class DataPreprocessPipeline:
     """
-    Pipeline that extracts, quality-checks, filters, transforms,
-    but stores ONLY STL geometry-related tables.
+    Pipeline for extracting, transforming, and loading bending setup and process data.
+
+    This class orchestrates the full ETL process:
+    1. Extracts bending setup and machine/process data using DataExtractor.
+    2. Transforms the data with DataTransformer (quality check, remove failed experiments, normalization, NaN handling).
+    3. Loads the final DataFrames into a SQLite database using DataLoader.
     """
 
     @classmethod
     @log_function
     def run(
         cls,
-        failed_experiment: list[int] | None = None,
-        output_dir: Path | None = None,
+        failed_experiment: list[int] | None,
+        eliminated_columns: dict[str, list[str]] | None,
+        normalized_tables: list[str] | None,
+        correlation_matrices: list[str] | None,
+        nan_handler: bool = True,
     ):
-        # ----------------------------
-        # Paths (Path-composed)
-        # ----------------------------
-        pkl_file_path = Path("data") / "raw" / "experiments_process_and_results.pkl"
-        if output_dir is None:
-            output_dir = Path("data") / "processed" / "stl"
+        """
+        Execute the full preprocessing pipeline: extraction, transformation, and loading.
 
-        # ----------------------------
-        # Step 1: Extract all sections
-        # ----------------------------
-        extractor = DataExtractor(pkl_file_path=pkl_file_path)
-        all_sections = extractor.get_all_sections()
+        Steps:
+        ------
+        1. Extraction:
+            - Use DataExtractor to load all bending setups into DataFrames.
+        2. Transformation:
+            - Create a DataTransformer instance with the extracted DataFrames.
+            - Check data quality and convert types.
+            - Remove failed experiments (hardcoded IDs [1, 48, 166]).
+            - Normalize numeric data.
+            - Drop all-NaN columns.
+            - Retrieve processed process and geometry DataFrames.
+            - Eliminate columns that are always constant(PRESSURE-DIE_LEFT_AXIAL_Movement_[mm], COLLET_ROTATING_Movement_[mm])
+        3. Loading:
+            - Collect selected DataFrames into a dictionary.
+            - Use DataLoader to save them to SQLite.
+            - Certain tables store the index as a column for query convenience.
 
-        # Map sections to DataFrames
-        section_names = [
-            "arc", "lin1", "lin2",
-            "stl_arc", "stl_lin1", "stl_lin2",
-            "machine", "sensor", "movement", "bending"
-        ]
-        dfs = {}
-        for section in section_names:
-            df = all_sections[all_sections["Section"] == section].copy()
-            df.drop(columns=["Section"], inplace=True)
-            dfs[section] = df
+        Args:
+            None
 
-        # ----------------------------
-        # Step 2: Initialize transformer
-        # ----------------------------
-        transformer = DataTransformer(
-            df_arc=dfs.get("arc"),
-            df_lin1=dfs.get("lin1"),
-            df_lin2=dfs.get("lin2"),
-            df_stl_arc=dfs.get("stl_arc"),
-            df_stl_lin1=dfs.get("stl_lin1"),
-            df_stl_lin2=dfs.get("stl_lin2"),
-            df_machine=dfs.get("machine"),
-            df_sensor=dfs.get("sensor"),
-            df_movement=dfs.get("movement"),
-            df_bending=dfs.get("bending"),
+        Returns:
+            None: The pipeline updates and saves the DataFrames to the SQLite database.
+        """
+        extractor = DataExtractor()
+        dfs = extractor.get_all_bending_setups()
+
+        transformer = DataTransformer(**dfs)
+        transformer.check_quality()
+        if failed_experiment:
+            transformer.delete_failed_experiment(failed_experiment=failed_experiment)
+
+        if eliminated_columns:
+            pairs = [
+                (key, item)
+                for key, values in eliminated_columns.items()
+                for item in values
+            ]
+            for tabel_name, column_name in pairs:
+                transformer.eliminate_column(
+                    df_name=tabel_name, column_name=column_name
+                )
+
+        if normalized_tables:  
+            transformer.normalize_data(normalized_table=normalized_tables)
+
+        if nan_handler:
+            transformer.nan_handler()
+
+        if correlation_matrices:
+            transformer.save_correlation_matrices(tables=correlation_matrices)
+
+        df_machine_and_movement, df_sensor, df_machine, df_movement = (
+            transformer.get_process_data()
+        )
+        df_arc, df_lin1, df_lin2, linear_df, all_geometry_data = (
+            transformer.get_geometry_data()
+        )
+        transformer.get_bending_setup()
+
+        loader = DataLoader("data/processed/tube_geometry.db")
+        dataframes = {
+            "machine_and_movement": df_machine_and_movement,
+            "linear1": df_lin1,
+            "linear2": df_lin2,
+            "arc": df_arc,
+            "movement": df_movement,
+        }
+        loader.store_to_sqlite(
+            dataframes=dataframes,
+            store_index_tables=[
+                "machine_and_movement",
+                "movement",
+            ],
         )
 
-        # ----------------------------
-        # Step 3: Full quality check on all tables
-        # ----------------------------
+
+class STLGeometryPreprocessPipeline:
+    """
+    Pipeline for extracting and saving STL-suitable geometry data to CSV.
+
+    Steps:
+    1. Extract STL-suitable geometry data using DataExtractor.
+    2. Transform data with DataTransformer (type coercion, remove failed experiments, NaN handling).
+    3. Save arc/lin1/lin2 STL geometry CSVs plus combined datasets.
+    """
+
+    @classmethod
+    @log_function
+    def run(
+        cls,
+        failed_experiment: list[int] | None,
+        output_dir: Path | str,
+        nan_handler: bool = True,
+    ) -> None:
+        """
+        Execute the STL geometry preprocessing pipeline and write CSV files.
+
+        Args:
+            failed_experiment (list[int] | None): Experiment IDs to exclude.
+            output_dir (Path | str): Destination directory for CSV files.
+            nan_handler (bool): Whether to drop all-NaN columns. Defaults to True.
+        """
+        extractor = DataExtractor()
+        dfs = extractor.get_all_bending_setups()
+
+        transformer = DataTransformer(**dfs)
         transformer.check_quality()
 
-        # ----------------------------
-        # Step 4: Remove failed experiments (all tables)
-        # ----------------------------
         if failed_experiment:
-            transformer.delete_failed_experiment(failed_experiment)
+            transformer.delete_failed_experiment(failed_experiment=failed_experiment)
 
-        # ----------------------------
-        # Step 5: Transform STL tables only
-        # ----------------------------
-        stl_tables = [
-            "df_stl_arc",
-            "df_stl_lin1",
-            "df_stl_lin2",
-        ]
-        transformer.normalize_data(normalized_table=stl_tables)
-        transformer.nan_handler()
+        if nan_handler:
+            transformer.nan_handler()
 
-        # ----------------------------
-        # Step 6: Retrieve STL geometry tables
-        # ----------------------------
-        (
-            df_stl_arc,
-            df_stl_lin1,
-            df_stl_lin2,
-            stl_linear_combined,
-            all_geometry_stl,
-        ) = transformer.get_stl_geometry_data()
+        df_arc = transformer.df_arc
+        df_bending = transformer.df_bending
 
-        # ----------------------------
-        # Step 7: Store STL CSVs ONLY
-        # ----------------------------
-        output_dir.mkdir(parents=True, exist_ok=True)
-        loader = DataLoader(output_dir=output_dir)
+        output_path = Path(output_dir)
+        output_path.mkdir(parents=True, exist_ok=True)
 
-        stl_dataframes_to_save = {
-            "stl_arc": df_stl_arc,
-            "stl_lin1": df_stl_lin1,
-            "stl_lin2": df_stl_lin2,
-            "stl_linear_combined": stl_linear_combined,
-            "all_geometry_stl": all_geometry_stl,
-        }
+        df_arc.to_csv(output_path / "geometry_data.csv", index=False)
+        df_bending.to_csv(output_path / "bending_data.csv", index=False)
+ 
 
-        loader.store_to_csv(dataframes=stl_dataframes_to_save)
-
-
-if __name__ == "__main__":
-    STLGeometryPreprocessPipeline.run(
-        failed_experiment=[1, 48, 166],
-        output_dir=Path("data") / "processed" / "stl",
-    )
-
-    print("STL geometry preprocessing finished. CSVs saved.")

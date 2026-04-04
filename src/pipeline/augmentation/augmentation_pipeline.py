@@ -39,6 +39,9 @@ class GeometryAugmentationPipeline:
             geometry_df["Group_ID"].nunique(),
         )
 
+        # mark original data
+        geometry_df["Synthetic"] = False
+
         # -------------------------------------------------
         # Augmentation configuration
         # -------------------------------------------------
@@ -83,6 +86,9 @@ class GeometryAugmentationPipeline:
             stats,
         )
 
+        # mark synthetic rows
+        synthetic_df["Synthetic"] = True
+
         # -------------------------------------------------
         # Merge datasets
         # -------------------------------------------------
@@ -92,7 +98,14 @@ class GeometryAugmentationPipeline:
             ignore_index=True,
         )
 
-        augmented_path = output_dir / "augmented_geometry.csv"
+        # store augmentation parameter in dataset
+        augmented_df["Expected_Per_Group"] = expected_per_group
+
+        # -------------------------------------------------
+        # Save dataset
+        # -------------------------------------------------
+
+        augmented_path = output_dir / f"augmented_geometry_{expected_per_group}.csv"
 
         augmented_df.to_csv(augmented_path, index=False)
 

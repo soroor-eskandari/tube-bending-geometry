@@ -20,7 +20,12 @@ lib64/
 parts/
 sdist/
 var/
+research/
+src/pipeline/rf_augmentation/model
+ml_result/
 wheels/
+source/
+src/logging
 share/python-wheels/
 *.egg-info/
 .installed.cfg

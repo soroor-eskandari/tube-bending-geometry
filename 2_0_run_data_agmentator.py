@@ -16,7 +16,7 @@ if __name__ == "__main__":
 
     GeometryAugmentationPipeline.run(
         project_root=project_root,
-        expected_per_group=50,
+        expected_per_group=40,
         output_dir=output_dir,
     )
 

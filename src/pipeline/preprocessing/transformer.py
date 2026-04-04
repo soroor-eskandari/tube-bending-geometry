@@ -201,7 +201,7 @@ class DataTransformer:
 
             if "Time_[s]" in df.columns:
                 df["Time_[s]"] = df["Time_[s]"].astype(float)
-                df.set_index("Time_[s]", inplace=True)
+                df.set_index("Time_[s]", inplace=True, drop=False)
 
             df["Experiment_ID"] = pd.to_numeric(df["Experiment_ID"], errors="coerce")
 

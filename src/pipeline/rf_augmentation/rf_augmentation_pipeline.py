@@ -2,19 +2,14 @@ import pandas as pd
 import numpy as np
 from pathlib import Path
 import logging
+import ast
 
 from src.logging.log_utils import log_function
 from src.pipeline.rf_augmentation.rf_preprocessor import RFPreprocessor
-from src.pipeline.rf_augmentation.rf_feature_extractor import TimeSeriesFeatureExtractor
 from src.pipeline.rf_augmentation.rf_dataset_builder import RFTrainingDatasetBuilder
-from src.pipeline.rf_augmentation.rf_model_trainer import RFModelTrainer
+from src.pipeline.rf_augmentation.rf_best_model_trainer import RFModelTrainer
 from src.pipeline.rf_augmentation.rf_augmentation_generator import RFAugmentationGenerator
 from src.pipeline.rf_augmentation.geometry_rebuilder import GeometryRebuilder
-from src.pipeline.rf_augmentation.rf_model_evaluator import RFModelEvaluator
-from src.pipeline.rf_augmentation.rf_feature_cleaner import RFFeatureCleaner
-from src.pipeline.rf_augmentation.rf_feature_ranking_dataset_builder import RFFeatureRankerDatasetBuilder
-from src.pipeline.rf_augmentation.rf_feature_type_ranker import RFFeatureTypeRanker
-
 
 logger = logging.getLogger(__name__)
 
@@ -23,12 +18,12 @@ class RFAugmentationPipeline:
 
     @staticmethod
     @log_function
-    def run(project_root: Path, expected_per_group: int, output_dir: Path):
+    def run(project_root, n_new_samples, output_dir):
 
-        # -------------------------
-        # Load data
-        # -------------------------
-        logger.info("Loading input datasets...")
+        # ============================================================
+        # LOAD DATA
+        # ============================================================
+        logger.info("Reading data")
 
         machine_movement = pd.read_csv(
             project_root / "data" / "processed" / "machine_and_movement.csv"
@@ -40,42 +35,41 @@ class RFAugmentationPipeline:
             project_root / "data" / "processed" / "geometry.csv"
         )
 
-        logger.info(f"Machine & movement: {machine_movement.shape}")
-        logger.info(f"Bending: {bending.shape}")
-        logger.info(f"Geometry: {geometry.shape}")
+        result_dir = project_root / "src" / "pipeline" / "rf_augmentation" / "result"
+        model_dir = project_root / "src" / "pipeline" / "rf_augmentation" / "model"
 
-        # -------------------------
-        # Infer angle values
-        # -------------------------
-        logger.info("Inferring angle configuration")
+        output_dir.mkdir(parents=True, exist_ok=True)
+        model_dir.mkdir(parents=True, exist_ok=True)
 
-        angle_counts = geometry.groupby("Experiment_ID")["Angle[degree]ORDistance[mm]"].count()
-
-        if angle_counts.empty:
-            raise ValueError("geometry.csv has no angle records")
-
-        if expected_per_group is not None and expected_per_group in angle_counts.values:
-            expected_angles = int(expected_per_group)
-        else:
-            logger.warning(
-                "Expected group size %s not found, using most frequent angle count",
-                expected_per_group,
-            )
-            expected_angles = int(angle_counts.mode().iloc[0])
-
-        valid_id = angle_counts[angle_counts == expected_angles].index[0]
-
-        angle_values = (
-            geometry[geometry["Experiment_ID"] == valid_id]
-            .sort_values("Angle[degree]ORDistance[mm]")["Angle[degree]ORDistance[mm]"]
-            .to_numpy()
+        # ============================================================
+        # FEATURE TYPE SELECTION
+        # ============================================================
+        
+        best_subset_combo = pd.read_csv(
+            result_dir / "greedy_search_results.csv"
         )
 
-        logger.info(f"Using {expected_angles} angles per experiment")
+        # --- Best MAIN ---
+        best_main_idx = best_subset_combo["r2_main_best"].idxmax()
+        best_main_row = best_subset_combo.loc[best_main_idx]
 
-        # -------------------------
-        # Preprocessing
-        # -------------------------
+        # --- Best SECONDARY ---
+        best_secondary_idx = best_subset_combo["r2_secondary_best"].idxmax()
+        best_secondary_row = best_subset_combo.loc[best_secondary_idx]
+
+        main_top_features = ast.literal_eval(best_main_row["main_subset"])
+        secondary_top_features = ast.literal_eval(best_secondary_row["secondary_subset"])
+
+        logger.info(
+            f"MAIN best features row: {best_main_row.to_dict()}"
+        )
+        logger.info(
+            f"SECONDARY best features row:: {best_secondary_row.to_dict()}"
+        )
+
+        # ============================================================
+        # PREPROCESS
+        # ============================================================
         logger.info("Preprocessing data")
 
         machine_movement_clean, bending_clean = RFPreprocessor.preprocess_data(
@@ -83,193 +77,136 @@ class RFAugmentationPipeline:
             bending_df=bending,
         )
 
-        logger.info(f"machine_movement_clean: {machine_movement_clean.shape}")
-        logger.info(f"bending_clean: {bending_clean.shape}")
-
-        # -------------------------
-        # Feature Extraction 
-        # -------------------------
-        logger.info("Extracting time-series features")
-
-        signal_cols_machine = [
-            col for col in machine_movement_clean.columns
-            if col not in ["Experiment_ID", "Time_[s]"]
-        ]
-
-        machine_movement_features = TimeSeriesFeatureExtractor.extract_features(
-            df=machine_movement_clean,
-            signal_cols=signal_cols_machine
-        )
-
-        logger.info(f"machine_movement_features: {machine_movement_features.shape}")
-
-        # -------------------------
-        # Feature Cleaning 
-        # -------------------------        
-
-        logger.info("Cleaning features")
-
-        machine_movement_features_clean = RFFeatureCleaner.clean_features(
-            df=machine_movement_features,
-            target=(geometry["Main-axis [mm]"] + geometry["Secondary-axis [mm]"]) / 2,
-            corr_threshold=0.95,
-        )
-
-        logger.info(f"Cleaned features shape: {machine_movement_features_clean.shape}")
-
-        # -------------------------
-        # Feature Ranking Dataset
-        # -------------------------
-        logger.info("Building dataset for feature ranking")
-
-        X_rf, y_main, y_secondary, feature_names = RFFeatureRankerDatasetBuilder.build(
-            machine_movement_df=machine_movement_features_clean,
-            bending_df=bending_clean,
-            geometry_df=geometry,
-            use_bending=True,   
-        )
-
-        logger.info(f"X_rf shape: {X_rf.shape}")
-        logger.info(f"y_main shape: {y_main.shape}")
-        logger.info(f"y_secondary shape: {y_secondary.shape}")
-
-
-        # -------------------------
-        # Feature Type Ranking (MAIN)
-        # -------------------------
-        logger.info("Ranking feature types for MAIN target")
-
-        # ouput model directory
-        model_dir = project_root / "src" / "pipeline" / "rf_augmentation" / "model"
-
-        df_main_types, df_secondary_types, rf_main, rf_secondary = (
-            RFFeatureTypeRanker.rank_feature_types_dual(
-                X=X_rf,
-                y_main=y_main,
-                y_secondary=y_secondary,
-                feature_names=feature_names,   # only needed if X_rf is ndarray
-                model_output_dir=model_dir
-            )
-        )
-
-        logger.info(f"Top feature types (main): {df_main_types.head(10)['feature_type'].tolist()}")
-        logger.info(f"Top feature types (secondary): {df_secondary_types.head(10)['feature_type'].tolist()}")
-
-        # Show top types (pipeline decides, not class)
-        top_feature_types_main = df_main_types["feature_type"].head(10).tolist()
-        top_feature_types_secondary = df_secondary_types["feature_type"].head(10).tolist()
-
-        selected_feature_types = list(
-            set(top_feature_types_main) |
-            set(top_feature_types_secondary)
-        )
-
-        logger.info(f"Selected feature types (union): {selected_feature_types}")
-
-        # -------------------------
-        # Dataset
-        # -------------------------
+        # ============================================================
+        # BUILD DATASET
+        # ============================================================
         logger.info("Building dataset")
 
-        X_rf, y_main, y_secondary = RFTrainingDatasetBuilder.build(
-            machine_movement_average_df=machine_movement_features,
-            bending_features_df=bending_clean,
+        X_main, X_secc, Y_main, Y_sec, feature_names_main, feature_names_secondary = RFTrainingDatasetBuilder.build(
+            machine_movement__df=machine_movement_clean,
             geometry_df=geometry,
-            expected_angles=expected_angles,
+            bending_df=bending_clean,
+            main_selected_features=main_top_features,
+            secondary_selected_features=secondary_top_features,
         )
 
-        logger.info(f"X_rf: {X_rf.shape}")
-        logger.info(f"y_main: {y_main.shape}")
-        logger.info(f"y_secondary: {y_secondary.shape}")
+        # ============================================================
+        # TRAIN MODEL (FINAL BEST CONFIG)
+        # ============================================================
+        logger.info("Training final models (MAIN + SECONDARY)")
 
-        # -------------------------
-        # Train
-        # -------------------------
-        logger.info("Training Random Forest models")
+        models = RFModelTrainer.train(
+            X_main=X_main,
+            X_secondary=X_secc,
+            y_main=Y_main,
+            y_secondary=Y_sec,
+            model_dir=model_dir,
 
-        trainer = RFModelTrainer()
-        train_out = trainer.train(X_rf, y_main, y_secondary)
+            # Naming
+            paper_name="rf_best_model", 
 
-        logger.info("Training completed")
+            # Model params
+            n_estimators=1100,
+            random_state=42,
 
-        # -------------------------
-        # Save models
-        # -------------------------
-        model_dir = project_root / "ml" / "rf_augmentation"
-        model_dir.mkdir(parents=True, exist_ok=True)
+            # MLflow
+            use_mlflow=True,
+            mlflow_tracking_uri=None,  
+            mlflow_experiment="rf_final_models",
+            mlflow_run_name=None,      
 
-        trainer.save(train_out, model_dir)
-
-        # -------------------------
-        # Predict
-        # -------------------------
-        logger.info("Running predictions on test split")
-
-        preds = trainer.predict(train_out, train_out["X_test"])
-
-        # -------------------------
-        # Evaluate
-        # -------------------------
-        logger.info("Evaluating models")
-
-        evaluator = RFModelEvaluator()
-
-        main_results = evaluator.evaluate(
-            train_out["y_main_test"],
-            preds["y_main_pred"]
+            # Metadata (optional but recommended)
+            feature_names_main=feature_names_main,
+            feature_names_secondary=feature_names_secondary,
         )
 
-        sec_results = evaluator.evaluate(
-            train_out["y_sec_test"],
-            preds["y_sec_pred"]
-        )
+        # ============================================================
+        # SAVE FINAL RESULTS SUMMARY
+        # ============================================================
+        logger.info("Saving final results summary")
 
-        logger.info(f"Main R2: {main_results['r2_global']:.4f}")
-        logger.info(f"Secondary R2: {sec_results['r2_global']:.4f}")
+        results_summary = {
+            "paper_name": "rf_best_model",
 
-        # -------------------------
-        # Augmentation
-        # -------------------------
-        logger.info("Generating augmented data")
+            # metrics
+            "r2_main": models["metrics"]["r2_main"],
+            "r2_secondary": models["metrics"]["r2_secondary"],
+            "mse_main": models["metrics"]["mse_main"],
+            "mse_secondary": models["metrics"]["mse_secondary"],
 
-        X_new, y_main_new, y_secondary_new = RFAugmentationGenerator.generate(
-            X_rf=X_rf,
-            model_main=train_out["model_main"],
-            model_secondary=train_out["model_secondary"],
-            n_samples=1000,
-            noise_scale=0.01
-        )
+            # feature info
+            "main_features": str(main_top_features),
+            "secondary_features": str(secondary_top_features),
 
-        # -------------------------
-        # Combine
-        # -------------------------
-        X_aug = np.vstack([X_rf, X_new])
-        y_main_aug = np.vstack([y_main, y_main_new])
-        y_secondary_aug = np.vstack([y_secondary, y_secondary_new])
+            # feature counts
+            "n_features_main": len(feature_names_main),
+            "n_features_secondary": len(feature_names_secondary),
 
-        # -------------------------
-        # Rebuild geometry
-        # -------------------------
-        logger.info("Rebuilding geometry")
+            # dataset info
+            "n_samples": X_main.shape[0],
 
-        geometry_aug_df = GeometryRebuilder.build(
-            y_main=y_main_aug,
-            y_secondary=y_secondary_aug,
-            angle_values=angle_values,
-            n_original=y_main.shape[0],
-        )
-
-        # -------------------------
-        # Save
-        # -------------------------
-        output_dir.mkdir(parents=True, exist_ok=True)
-        geometry_aug_df.to_csv(output_dir / "geometry_augmented.csv", index=False)
-
-        logger.info(f"Saved augmented dataset to: {output_dir}")
-
-        return {
-            "main_metrics": main_results,
-            "secondary_metrics": sec_results,
-            "model_dir": model_dir,
-            "output_dir": output_dir,
+            # paths
+            "model_main_path": str(models["model_main_path"]),
+            "model_secondary_path": str(models["model_secondary_path"]),
         }
+
+        results_df = pd.DataFrame([results_summary])
+
+        results_path = output_dir / "final_model_results.csv"
+        results_df.to_csv(results_path, index=False)
+
+        logger.info(f"Saved final results → {results_path}")
+
+        # ============================================================
+        # GENERATE NEW FEATURES
+        # ============================================================
+        logger.info("Generating augmented samples")
+
+        # ============================================================
+        # GENERATE NEW FEATURES
+        # ============================================================
+        logger.info("Generating augmented samples")
+
+        X_main_aug, X_sec_aug, y_main_new, y_sec_new = RFAugmentationGenerator.generate(
+            X_main=X_main,
+            X_secondary=X_secc,
+            model_main=models["model_main"],
+            model_secondary=models["model_secondary"],
+            n_new_samples=n_new_samples,
+        )
+
+        # ============================================================
+        # REBUILD GEOMETRY
+        # ============================================================
+        logger.info("Rebuilding final geometry output")
+
+        # original predictions
+        y_main_original = models["model_main"].predict(X_main)
+        y_sec_original = models["model_secondary"].predict(X_secc)
+
+        # combine
+        y_main_all = np.vstack([y_main_original, y_main_new])
+        y_sec_all = np.vstack([y_sec_original, y_sec_new])
+
+
+        n_points = y_main_all.shape[1]  
+
+        angle_values = np.arange(n_points)
+        angle_values = np.sort(angle_values)
+
+        final_geometry_df = GeometryRebuilder.build(
+            y_main=y_main_all,
+            y_secondary=y_sec_all,
+            angle_values=angle_values,
+            n_original=X_main.shape[0],  
+        )
+
+        # save
+        final_geometry_path = output_dir / "final_geometry.csv"
+        final_geometry_df.to_csv(final_geometry_path, index=False)
+
+        logger.info(
+            f"Augmentation pipeline finished | "
+            f"Generated samples: {len(y_main_new)} | "
+            f"Final geometry rows: {len(final_geometry_df)}"
+        )

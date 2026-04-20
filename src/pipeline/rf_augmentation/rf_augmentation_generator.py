@@ -14,99 +14,86 @@ class RFAugmentationGenerator:
 
     @staticmethod
     def generate(
-        X_rf: np.ndarray,
+        X_main: np.ndarray,
         model_main,
         model_secondary,
-        n_samples: int = 1000,
+        X_secondary: np.ndarray | None = None,
+        n_new_samples: int = 0,
         noise_scale: float = 0.01,
         use_feature_std: bool = True,
         random_state: int = 42
     ):
-        """
-        Generate augmented dataset.
-
-        Parameters
-        ----------
-        X_rf : np.ndarray
-            Original feature matrix (n_samples, n_features)
-
-        model_main : trained model
-            RF model for main axis
-
-        model_secondary : trained model
-            RF model for secondary axis
-
-        n_samples : int
-            Number of new samples to generate
-
-        noise_scale : float
-            Noise intensity factor
-
-        use_feature_std : bool
-            If True → scale noise per feature std
-            If False → uniform noise
-
-        random_state : int
-            Reproducibility
-
-        Returns
-        -------
-        X_new : np.ndarray
-        y_main_new : np.ndarray
-        y_secondary_new : np.ndarray
-        """
-
         logger.info("Starting RF-based data augmentation")
 
         rng = np.random.default_rng(random_state)
 
-        n_original, n_features = X_rf.shape
+        if X_secondary is None:
+            X_secondary = X_main
+
+        n_original, n_features_main = X_main.shape
+        _, n_features_sec = X_secondary.shape
+
+        if n_new_samples <= 0:
+            logger.info("No augmentation requested (n_new_samples <= 0). Returning originals.")
+            return X_main, X_secondary, None, None
 
         # -------------------------
         # Step 1: Sample base rows
         # -------------------------
-        indices = rng.choice(n_original, size=n_samples, replace=True)
-        X_sampled = X_rf[indices]
+        indices = rng.choice(n_original, size=n_new_samples, replace=True)
+        X_main_sampled = X_main[indices]
+        X_secondary_sampled = X_secondary[indices]
 
         # -------------------------
         # Step 2: Add noise
         # -------------------------
         if use_feature_std:
-            feature_std = np.std(X_rf, axis=0)
-            noise = rng.normal(
+            feature_std_main = np.std(X_main, axis=0)
+            noise_main = rng.normal(
                 loc=0.0,
-                scale=noise_scale * (feature_std + 1e-8),
-                size=X_sampled.shape
-            )
-        else:
-            noise = rng.normal(
-                loc=0.0,
-                scale=noise_scale,
-                size=X_sampled.shape
+                scale=noise_scale * (feature_std_main + 1e-8),
+                size=X_main_sampled.shape
             )
 
-        X_new = X_sampled + noise
+            if X_secondary is X_main:
+                noise_secondary = noise_main
+            else:
+                feature_std_secondary = np.std(X_secondary, axis=0)
+                noise_secondary = rng.normal(
+                    loc=0.0,
+                    scale=noise_scale * (feature_std_secondary + 1e-8),
+                    size=X_secondary_sampled.shape
+                )
+        else:
+            noise_main = rng.normal(0.0, noise_scale, size=X_main_sampled.shape)
+
+            if X_secondary is X_main:
+                noise_secondary = noise_main
+            else:
+                noise_secondary = rng.normal(0.0, noise_scale, size=X_secondary_sampled.shape)
+
+        X_main_new = X_main_sampled + noise_main
+        X_secondary_new = X_secondary_sampled + noise_secondary
 
         # -------------------------
         # Step 3: Predict geometry
         # -------------------------
         logger.info("Predicting geometry for augmented samples")
 
-        y_main_new = model_main.predict(X_new)
-        y_secondary_new = model_secondary.predict(X_new)
+        y_main_new = model_main.predict(X_main_new)
+        y_secondary_new = model_secondary.predict(X_secondary_new)
 
         # -------------------------
-        # Step 4: Basic sanity check
+        # Step 4: Combine with original
         # -------------------------
-        if np.isnan(X_new).any():
-            logger.warning("NaNs detected in X_new")
+        X_main_aug = np.vstack([X_main, X_main_new])
+        X_secondary_aug = np.vstack([X_secondary, X_secondary_new])
 
-        if np.isnan(y_main_new).any():
-            logger.warning("NaNs detected in y_main_new")
+        logger.info(
+            "Augmentation summary → original: %s, new: %s, total: %s",
+            n_original,
+            n_new_samples,
+            X_main_aug.shape[0],
+        )
 
-        if np.isnan(y_secondary_new).any():
-            logger.warning("NaNs detected in y_secondary_new")
-
-        logger.info("Augmentation completed successfully")
-
-        return X_new, y_main_new, y_secondary_new
+        return X_main_aug, X_secondary_aug, y_main_new, y_secondary_new

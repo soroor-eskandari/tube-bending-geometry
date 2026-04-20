@@ -103,11 +103,44 @@ class RFModelTrainer:
     # Save best model (or last fold)
     # -------------------------
     @staticmethod
-    def save(models, output_dir: Path):
+    def save(models, output_dir: Path, target: str = "separate"):
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        joblib.dump(models["model_main"], output_dir / "rf_main.pkl")
-        joblib.dump(models["model_secondary"], output_dir / "rf_secondary.pkl")
+        # If a list of fold results is provided, select the best fold(s) by RMSE.
+        if isinstance(models, list):
+            if len(models) == 0:
+                raise ValueError("No fold results provided to save().")
+
+            if target == "main":
+                best = min(models, key=lambda x: x["rmse_main"])
+                model_main = best["model_main"]
+                model_secondary = best["model_secondary"]
+            elif target == "secondary":
+                best = min(models, key=lambda x: x["rmse_secondary"])
+                model_main = best["model_main"]
+                model_secondary = best["model_secondary"]
+            elif target == "combined":
+                best = min(
+                    models,
+                    key=lambda x: (x["rmse_main"] + x["rmse_secondary"]) / 2.0
+                )
+                model_main = best["model_main"]
+                model_secondary = best["model_secondary"]
+            elif target == "separate":
+                best_main = min(models, key=lambda x: x["rmse_main"])
+                best_sec = min(models, key=lambda x: x["rmse_secondary"])
+                model_main = best_main["model_main"]
+                model_secondary = best_sec["model_secondary"]
+            else:
+                raise ValueError(
+                    "Invalid target. Use 'main', 'secondary', 'combined', or 'separate'."
+                )
+        else:
+            model_main = models["model_main"]
+            model_secondary = models["model_secondary"]
+
+        joblib.dump(model_main, output_dir / "rf_main.pkl")
+        joblib.dump(model_secondary, output_dir / "rf_secondary.pkl")
 
     # -------------------------
     # Load models

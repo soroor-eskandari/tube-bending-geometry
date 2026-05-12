@@ -18,7 +18,7 @@ class RFAugmentationPipeline:
 
     @staticmethod
     @log_function
-    def run(project_root, n_new_samples, output_dir):
+    def run(project_root, output_dir):
 
         # ============================================================
         # LOAD DATA
@@ -44,27 +44,31 @@ class RFAugmentationPipeline:
         # ============================================================
         # FEATURE TYPE SELECTION
         # ============================================================
-        
+                
         best_subset_combo = pd.read_csv(
             result_dir / "greedy_search_results.csv"
         )
 
-        # --- Best MAIN ---
-        best_main_idx = best_subset_combo["r2_main_best"].idxmax()
-        best_main_row = best_subset_combo.loc[best_main_idx]
+        # --- 5th BEST MAIN ---
+        sorted_main = best_subset_combo.sort_values(
+            by="r2_main_best", ascending=False
+        )
+        best_main_row = sorted_main.iloc[9]  # 5th place
 
-        # --- Best SECONDARY ---
-        best_secondary_idx = best_subset_combo["r2_secondary_best"].idxmax()
-        best_secondary_row = best_subset_combo.loc[best_secondary_idx]
+        # --- 5th BEST SECONDARY ---
+        sorted_secondary = best_subset_combo.sort_values(
+            by="r2_secondary_best", ascending=False
+        )
+        best_secondary_row = sorted_secondary.iloc[-1]  # 5th place
 
         main_top_features = ast.literal_eval(best_main_row["main_subset"])
         secondary_top_features = ast.literal_eval(best_secondary_row["secondary_subset"])
 
         logger.info(
-            f"MAIN best features row: {best_main_row.to_dict()}"
+            f"MAIN 5th-best features row: {best_main_row.to_dict()}"
         )
         logger.info(
-            f"SECONDARY best features row:: {best_secondary_row.to_dict()}"
+            f"SECONDARY 5th-best features row: {best_secondary_row.to_dict()}"
         )
 
         # ============================================================
@@ -157,56 +161,4 @@ class RFAugmentationPipeline:
 
         logger.info(f"Saved final results → {results_path}")
 
-        # ============================================================
-        # GENERATE NEW FEATURES
-        # ============================================================
-        logger.info("Generating augmented samples")
-
-        # ============================================================
-        # GENERATE NEW FEATURES
-        # ============================================================
-        logger.info("Generating augmented samples")
-
-        X_main_aug, X_sec_aug, y_main_new, y_sec_new = RFAugmentationGenerator.generate(
-            X_main=X_main,
-            X_secondary=X_secc,
-            model_main=models["model_main"],
-            model_secondary=models["model_secondary"],
-            n_new_samples=n_new_samples,
-        )
-
-        # ============================================================
-        # REBUILD GEOMETRY
-        # ============================================================
-        logger.info("Rebuilding final geometry output")
-
-        # original predictions
-        y_main_original = models["model_main"].predict(X_main)
-        y_sec_original = models["model_secondary"].predict(X_secc)
-
-        # combine
-        y_main_all = np.vstack([y_main_original, y_main_new])
-        y_sec_all = np.vstack([y_sec_original, y_sec_new])
-
-
-        n_points = y_main_all.shape[1]  
-
-        angle_values = np.arange(n_points)
-        angle_values = np.sort(angle_values)
-
-        final_geometry_df = GeometryRebuilder.build(
-            y_main=y_main_all,
-            y_secondary=y_sec_all,
-            angle_values=angle_values,
-            n_original=X_main.shape[0],  
-        )
-
-        # save
-        final_geometry_path = output_dir / "final_geometry.csv"
-        final_geometry_df.to_csv(final_geometry_path, index=False)
-
-        logger.info(
-            f"Augmentation pipeline finished | "
-            f"Generated samples: {len(y_main_new)} | "
-            f"Final geometry rows: {len(final_geometry_df)}"
-        )
+       

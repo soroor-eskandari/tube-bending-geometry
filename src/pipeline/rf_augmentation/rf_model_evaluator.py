@@ -16,6 +16,111 @@ logger = logging.getLogger(__name__)
 class RFModelEvaluator:
 
     # =========================================================
+    # TRAIN-DATA EVALUATION
+    # =========================================================
+    @staticmethod
+    def evaluate_trained_model_on_train_data(
+        models,
+        X_main_train,
+        X_secondary_train,
+        y_main_train,
+        y_secondary_train,
+        output_dir: Path = None,
+        save_outputs: bool = True,
+    ):
+        """
+        Evaluate trained RF models on the training data only.
+
+        This is an in-sample evaluation:
+        1. Predict with the already-trained models on X_train.
+        2. Compare predictions against y_train.
+        3. Compute global and per-angle metrics for main and secondary targets.
+        """
+
+        required_model_keys = [
+            "model_main",
+            "model_secondary",
+        ]
+
+        missing_model_keys = [
+            key for key in required_model_keys
+            if key not in models
+        ]
+
+        if missing_model_keys:
+            raise ValueError(
+                f"Missing trained model keys: {missing_model_keys}"
+            )
+
+        y_main_pred_train = models["model_main"].predict(X_main_train)
+        y_secondary_pred_train = models["model_secondary"].predict(
+            X_secondary_train
+        )
+
+        main_results = RFModelEvaluator.evaluate(
+            y_true=y_main_train,
+            y_pred=y_main_pred_train,
+        )
+        secondary_results = RFModelEvaluator.evaluate(
+            y_true=y_secondary_train,
+            y_pred=y_secondary_pred_train,
+        )
+
+        if output_dir is not None and save_outputs:
+            RFModelEvaluator.save_results(
+                results=main_results,
+                output_dir=output_dir,
+                prefix="train_main",
+            )
+            RFModelEvaluator.save_results(
+                results=secondary_results,
+                output_dir=output_dir,
+                prefix="train_secondary",
+            )
+            RFModelEvaluator.plot_predictions(
+                y_true=y_main_train,
+                y_pred=y_main_pred_train,
+                output_dir=output_dir,
+                prefix="train_main",
+            )
+            RFModelEvaluator.plot_predictions(
+                y_true=y_secondary_train,
+                y_pred=y_secondary_pred_train,
+                output_dir=output_dir,
+                prefix="train_secondary",
+            )
+            RFModelEvaluator.plot_r2_mse_per_feature(
+                main_results=main_results,
+                sec_results=secondary_results,
+                output_dir=output_dir,
+                prefix="train",
+            )
+            RFModelEvaluator.plot_global_metrics_table(
+                main_results=main_results,
+                sec_results=secondary_results,
+                output_dir=output_dir,
+            )
+
+        logger.info(
+            "TRAIN EVALUATION | MAIN R2=%.6f | SECONDARY R2=%.6f",
+            main_results["r2_global"],
+            secondary_results["r2_global"],
+        )
+
+        return {
+            "main": {
+                "metrics": main_results,
+                "y_true": y_main_train,
+                "y_pred": y_main_pred_train,
+            },
+            "secondary": {
+                "metrics": secondary_results,
+                "y_true": y_secondary_train,
+                "y_pred": y_secondary_pred_train,
+            },
+        }
+
+    # =========================================================
     # METRICS
     # =========================================================
     @staticmethod

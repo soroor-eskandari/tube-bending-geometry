@@ -6,10 +6,10 @@ import ast
 
 from src.logging.log_utils import log_function
 from src.pipeline.rf_augmentation.rf_preprocessor import RFPreprocessor
+from src.pipeline.rf_augmentation.data_splitter import DataSplittor
 from src.pipeline.rf_augmentation.rf_dataset_builder import RFTrainingDatasetBuilder
 from src.pipeline.rf_augmentation.rf_best_model_trainer import RFModelTrainer
-from src.pipeline.rf_augmentation.rf_augmentation_generator import RFAugmentationGenerator
-from src.pipeline.rf_augmentation.geometry_rebuilder import GeometryRebuilder
+from src.pipeline.rf_augmentation.rf_model_evaluator import RFModelEvaluator
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +34,9 @@ class RFAugmentationPipeline:
         geometry = pd.read_csv(
             project_root / "data" / "processed" / "geometry.csv"
         )
+        unique_bending = pd.read_csv(
+            project_root / "data" / "raw" / "unique_bending_setups.csv"
+        )
 
         result_dir = project_root / "src" / "pipeline" / "rf_augmentation" / "result"
         model_dir = project_root / "src" / "pipeline" / "rf_augmentation" / "model"
@@ -49,26 +52,26 @@ class RFAugmentationPipeline:
             result_dir / "greedy_search_results.csv"
         )
 
-        # --- 5th BEST MAIN ---
+        # --- BEST MAIN ---
         sorted_main = best_subset_combo.sort_values(
             by="r2_main_best", ascending=False
         )
-        best_main_row = sorted_main.iloc[9]  # 5th place
+        best_main_row = sorted_main.iloc[0]  
 
-        # --- 5th BEST SECONDARY ---
+        # --- BEST SECONDARY ---
         sorted_secondary = best_subset_combo.sort_values(
             by="r2_secondary_best", ascending=False
         )
-        best_secondary_row = sorted_secondary.iloc[-1]  # 5th place
+        best_secondary_row = sorted_secondary.iloc[0]  
 
         main_top_features = ast.literal_eval(best_main_row["main_subset"])
         secondary_top_features = ast.literal_eval(best_secondary_row["secondary_subset"])
 
         logger.info(
-            f"MAIN 5th-best features row: {best_main_row.to_dict()}"
+            f"MAIN best features row: {best_main_row.to_dict()}"
         )
         logger.info(
-            f"SECONDARY 5th-best features row: {best_secondary_row.to_dict()}"
+            f"SECONDARY best features row: {best_secondary_row.to_dict()}"
         )
 
         # ============================================================
@@ -82,13 +85,34 @@ class RFAugmentationPipeline:
         )
 
         # ============================================================
+        # SPLIT DATA
+        # ============================================================
+        logger.info("Splitting geometry data")
+
+        train_df, test_df = DataSplittor.splittor(
+            geometry_df=geometry,
+            unique_bending_df=unique_bending,
+            test_size=0.2,
+            random_state=42,
+        )
+
+        logger.info(
+            "Geometry split | train_rows=%s | test_rows=%s | "
+            "train_groups=%s | test_groups=%s",
+            len(train_df),
+            len(test_df),
+            train_df["Group_ID"].nunique(),
+            test_df["Group_ID"].nunique(),
+        )
+
+        # ============================================================
         # BUILD DATASET
         # ============================================================
         logger.info("Building dataset")
 
-        X_main, X_secc, Y_main, Y_sec, feature_names_main, feature_names_secondary = RFTrainingDatasetBuilder.build(
+        X_main_train, X_sec_train, Y_main_train, Y_sec_train, feature_names_main, feature_names_secondary = RFTrainingDatasetBuilder.build(
             machine_movement__df=machine_movement_clean,
-            geometry_df=geometry,
+            geometry_df=train_df,
             bending_df=bending_clean,
             main_selected_features=main_top_features,
             secondary_selected_features=secondary_top_features,
@@ -100,10 +124,10 @@ class RFAugmentationPipeline:
         logger.info("Training final models (MAIN + SECONDARY)")
 
         models = RFModelTrainer.train(
-            X_main=X_main,
-            X_secondary=X_secc,
-            y_main=Y_main,
-            y_secondary=Y_sec,
+            X_main=X_main_train,
+            X_secondary=X_sec_train,
+            y_main=Y_main_train,
+            y_secondary=Y_sec_train,
             model_dir=model_dir,
 
             # Naming
@@ -122,6 +146,23 @@ class RFAugmentationPipeline:
             # Metadata (optional but recommended)
             feature_names_main=feature_names_main,
             feature_names_secondary=feature_names_secondary,
+        )
+
+        # ============================================================
+        # EVALUATE TRAINING DATA
+        # ============================================================
+        logger.info("Evaluating final models on training data")
+
+        evaluation_dir = output_dir / "train_evaluation"
+
+        train_evaluation = RFModelEvaluator.evaluate_trained_model_on_train_data(
+            models=models,
+            X_main_train=X_main_train,
+            X_secondary_train=X_sec_train,
+            y_main_train=Y_main_train,
+            y_secondary_train=Y_sec_train,
+            output_dir=evaluation_dir,
+            save_outputs=True,
         )
 
         # ============================================================
@@ -147,7 +188,22 @@ class RFAugmentationPipeline:
             "n_features_secondary": len(feature_names_secondary),
 
             # dataset info
-            "n_samples": X_main.shape[0],
+            "n_samples": X_main_train.shape[0],
+            "n_train_geometry_rows": len(train_df),
+            "n_test_geometry_rows": len(test_df),
+            "n_train_groups": train_df["Group_ID"].nunique(),
+            "n_test_groups": test_df["Group_ID"].nunique(),
+
+            # train evaluation
+            "train_eval_main_r2": train_evaluation["main"]["metrics"]["r2_global"],
+            "train_eval_secondary_r2": (
+                train_evaluation["secondary"]["metrics"]["r2_global"]
+            ),
+            "train_eval_main_mse": train_evaluation["main"]["metrics"]["mse_global"],
+            "train_eval_secondary_mse": (
+                train_evaluation["secondary"]["metrics"]["mse_global"]
+            ),
+            "train_eval_dir": str(evaluation_dir),
 
             # paths
             "model_main_path": str(models["model_main_path"]),

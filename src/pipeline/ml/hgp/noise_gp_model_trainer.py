@@ -5,7 +5,7 @@ import joblib
 import numpy as np
 import pandas as pd
 from sklearn.gaussian_process import GaussianProcessRegressor
-from sklearn.gaussian_process.kernels import ConstantKernel, RBF, WhiteKernel
+from sklearn.gaussian_process.kernels import ConstantKernel, Matern, WhiteKernel
 
 from src.logging.log_utils import log_function
 
@@ -125,11 +125,12 @@ class NoiseGPModelTrainer:
                     constant_value=1.0,
                     constant_value_bounds=(1e-3, 1e3),
                 )
-                * RBF(
+                * Matern(
                     length_scale=np.ones(
                         X_train.shape[1],
                     ),
                     length_scale_bounds=(1e-3, 1e3),
+                    nu=1.5,
                 )
                 + WhiteKernel(
                     noise_level=1e-5,

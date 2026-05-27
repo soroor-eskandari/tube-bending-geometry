@@ -59,12 +59,6 @@ class AugmentationDatasetBuilder:
 
         geometry_df = self._reorder_df(geometry_df)
 
-        logger.info(
-            "Dataset ready for augmentation | rows=%s | groups=%s",
-            len(geometry_df),
-            geometry_df["Group_ID"].nunique(),
-        )
-
         return geometry_df
 
     @log_function

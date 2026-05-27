@@ -12,7 +12,7 @@ if __name__ == "__main__":
     project_root = Path(".")
 
     # ---------------------------------------
-    # Generate new samples using the trained RF model
+    # Run the QRF interval prediction workflow.
     # ---------------------------------------
     QRFPipeline.run(
         project_root=project_root,

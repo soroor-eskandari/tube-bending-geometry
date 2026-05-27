@@ -8,9 +8,10 @@ import pandas as pd
 
 from src.logging.log_utils import log_function
 from src.pipeline.rf_augmentation.rf_preprocessor import RFPreprocessor
-from src.pipeline.rf_augmentation.rf_dataset_builder import RFTrainingDatasetBuilder
+from src.pipeline.rf_augmentation.rf_dataset_builder_generated import RFDatasetBuilder
 from src.pipeline.rf_augmentation.rf_augmentation_generator import RFAugmentationGenerator
 from src.pipeline.rf_augmentation.geometry_rebuilder import GeometryRebuilder
+from src.pipeline.rf_augmentation.rf_signal_selection_recorder import RFSignalSelectionRecorder
 
 logger = logging.getLogger(__name__)
 
@@ -103,7 +104,7 @@ class RFDataGeneratorPipeline:
         sorted_main = best_subset_combo.sort_values(
             by="r2_main_best", ascending=False
         )
-        best_main_row = sorted_main.iloc[9]
+        best_main_row = sorted_main.iloc[-1]
 
         # --- 5th BEST SECONDARY ---
         sorted_secondary = best_subset_combo.sort_values(
@@ -115,9 +116,6 @@ class RFDataGeneratorPipeline:
         secondary_top_features = ast.literal_eval(
             best_secondary_row["secondary_subset"]
         )
-
-        logger.info(f"MAIN best features row: {best_main_row.to_dict()}")
-        logger.info(f"SECONDARY best features row: {best_secondary_row.to_dict()}")
 
         # ============================================================
         # PREPROCESS
@@ -135,6 +133,7 @@ class RFDataGeneratorPipeline:
         logger.info("Starting group-wise augmentation")
 
         all_group_results = []
+        all_selection_records = []
 
         for group_idx, group_row in group.iterrows():
 
@@ -180,12 +179,14 @@ class RFDataGeneratorPipeline:
                     Y_sec,
                     feature_names_main,
                     feature_names_secondary,
-                ) = RFTrainingDatasetBuilder.build(
+                    aligned_ids,
+                ) = RFDatasetBuilder.build(
                     machine_movement__df=machine_group,
                     geometry_df=geometry_group,
                     bending_df=bending_group,
                     main_selected_features=main_top_features,
                     secondary_selected_features=secondary_top_features,
+                    return_experiment_ids=True,
                 )
 
             except Exception as exc:
@@ -197,16 +198,12 @@ class RFDataGeneratorPipeline:
             n_existing = X_main.shape[0]
             deficit = n_new_samples - n_existing
 
-            logger.info(
-                f"Group {group_idx} | existing={n_existing} | "
-                f"target={n_new_samples} | deficit={deficit}"
-            )
 
             # --------------------------------------------------------
             # ORIGINAL PREDICTIONS
             # --------------------------------------------------------
-            y_main_original = model_main.predict(X_main)
-            y_sec_original = model_secondary.predict(X_secc)
+            y_main_original = Y_main
+            y_sec_original = Y_sec
 
             # --------------------------------------------------------
             # GENERATE ONLY MISSING SAMPLES
@@ -217,18 +214,33 @@ class RFDataGeneratorPipeline:
                     X_sec_aug,
                     y_main_new,
                     y_sec_new,
+                    selection_details,
                 ) = RFAugmentationGenerator.generate(
                     X_main=X_main,
                     X_secondary=X_secc,
                     model_main=model_main,
                     model_secondary=model_secondary,
                     n_new_samples=deficit,
+                    sample_within_group_range=True,
+                    return_selection_details=True,
+                    random_state=42 + group_idx,
                 )
 
                 y_main_all = np.vstack([y_main_original, y_main_new])
                 y_sec_all = np.vstack([y_sec_original, y_sec_new])
 
                 n_generated = len(y_main_new)
+                all_selection_records.extend(
+                    RFSignalSelectionRecorder.build_records(
+                        group_id=group_idx + 1,
+                        exp_ids=exp_ids,
+                        aligned_ids=aligned_ids,
+                        feature_names_main=feature_names_main,
+                        feature_names_secondary=feature_names_secondary,
+                        selection_details=selection_details,
+                        synthetic_id_offset=n_existing,
+                    )
+                )
 
             else:
                 y_main_all = y_main_original
@@ -270,9 +282,13 @@ class RFDataGeneratorPipeline:
         final_geometry_path = output_dir / "final_geometry.csv"
         final_geometry_df.to_csv(final_geometry_path, index=False)
 
+        selection_values_path = output_dir / "signal_feature_selected_values.csv"
+        RFSignalSelectionRecorder.save(all_selection_records, selection_values_path)
+
         logger.info(
             f"Group-wise augmentation pipeline finished | "
             f"Groups processed: {len(all_group_results)} | "
             f"Final geometry rows: {len(final_geometry_df)} | "
-            f"Saved to: {final_geometry_path}"
+            f"Saved to: {final_geometry_path} | "
+            f"Selection values saved to: {selection_values_path}"
         )

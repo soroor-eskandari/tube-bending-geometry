@@ -33,12 +33,6 @@ class GeometryAugmentationPipeline:
 
         geometry_df = dataset_builder.build_dataset()
 
-        logger.info(
-            "Dataset loaded | rows=%s | groups=%s",
-            len(geometry_df),
-            geometry_df["Group_ID"].nunique(),
-        )
-
         # mark original data
         geometry_df["Synthetic"] = False
 

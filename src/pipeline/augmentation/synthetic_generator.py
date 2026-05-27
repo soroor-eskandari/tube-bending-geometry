@@ -40,12 +40,6 @@ class SyntheticExperimentGenerator:
             existing_experiments = group["Experiment_ID"].nunique()
             needed = max(0, self.expected_per_group - existing_experiments)
 
-            logger.info(
-                "Group %s | existing=%s | generating=%s",
-                group_id,
-                existing_experiments,
-                needed,
-            )
 
             if needed == 0:
                 continue

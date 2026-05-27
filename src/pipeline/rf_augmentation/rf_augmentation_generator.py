@@ -1,6 +1,8 @@
 import numpy as np
 import logging
 
+from src.pipeline.rf_augmentation.rf_group_feature_selector import RFGroupFeatureSelector
+
 logger = logging.getLogger(__name__)
 
 
@@ -21,7 +23,9 @@ class RFAugmentationGenerator:
         n_new_samples: int = 0,
         noise_scale: float = 0.01,
         use_feature_std: bool = True,
-        random_state: int = 42
+        random_state: int = 42,
+        sample_within_group_range: bool = True,
+        return_selection_details: bool = False,
     ):
         logger.info("Starting RF-based data augmentation")
 
@@ -30,11 +34,16 @@ class RFAugmentationGenerator:
         if X_secondary is None:
             X_secondary = X_main
 
+        X_main = X_main.astype(np.float64, copy=False)
+        X_secondary = X_secondary.astype(np.float64, copy=False)
+
         n_original, n_features_main = X_main.shape
         _, n_features_sec = X_secondary.shape
 
         if n_new_samples <= 0:
             logger.info("No augmentation requested (n_new_samples <= 0). Returning originals.")
+            if return_selection_details:
+                return X_main, X_secondary, None, None, {}
             return X_main, X_secondary, None, None
 
         # -------------------------
@@ -45,9 +54,22 @@ class RFAugmentationGenerator:
         X_secondary_sampled = X_secondary[indices]
 
         # -------------------------
-        # Step 2: Add noise
+        # Step 2: Select synthetic feature values
         # -------------------------
-        if use_feature_std:
+        if sample_within_group_range:
+            selection_details = (
+                RFGroupFeatureSelector.sample_independent_features_within_group_range(
+                    X_main=X_main,
+                    X_secondary=X_secondary,
+                    n_new_samples=n_new_samples,
+                    rng=rng,
+                )
+            )
+            X_main_sampled = selection_details["X_main_actual"]
+            X_secondary_sampled = selection_details["X_secondary_actual"]
+            X_main_new = selection_details["X_main_selected"]
+            X_secondary_new = selection_details["X_secondary_selected"]
+        elif use_feature_std:
             feature_std_main = np.std(X_main, axis=0)
             noise_main = rng.normal(
                 loc=0.0,
@@ -64,6 +86,25 @@ class RFAugmentationGenerator:
                     scale=noise_scale * (feature_std_secondary + 1e-8),
                     size=X_secondary_sampled.shape
                 )
+
+            X_main_new = X_main_sampled + noise_main
+            X_secondary_new = X_secondary_sampled + noise_secondary
+            feature_min_main = np.min(X_main, axis=0)
+            feature_max_main = np.max(X_main, axis=0)
+            feature_min_secondary = np.min(X_secondary, axis=0)
+            feature_max_secondary = np.max(X_secondary, axis=0)
+            selection_details = {
+                "sampled_indices": indices,
+                "X_main_actual": X_main_sampled,
+                "X_main_selected": X_main_new,
+                "X_main_group_min": feature_min_main,
+                "X_main_group_max": feature_max_main,
+                "X_secondary_actual": X_secondary_sampled,
+                "X_secondary_selected": X_secondary_new,
+                "X_secondary_group_min": feature_min_secondary,
+                "X_secondary_group_max": feature_max_secondary,
+                "selection_method": "std_noise_around_sampled_row",
+            }
         else:
             noise_main = rng.normal(0.0, noise_scale, size=X_main_sampled.shape)
 
@@ -72,8 +113,24 @@ class RFAugmentationGenerator:
             else:
                 noise_secondary = rng.normal(0.0, noise_scale, size=X_secondary_sampled.shape)
 
-        X_main_new = X_main_sampled + noise_main
-        X_secondary_new = X_secondary_sampled + noise_secondary
+            X_main_new = X_main_sampled + noise_main
+            X_secondary_new = X_secondary_sampled + noise_secondary
+            feature_min_main = np.min(X_main, axis=0)
+            feature_max_main = np.max(X_main, axis=0)
+            feature_min_secondary = np.min(X_secondary, axis=0)
+            feature_max_secondary = np.max(X_secondary, axis=0)
+            selection_details = {
+                "sampled_indices": indices,
+                "X_main_actual": X_main_sampled,
+                "X_main_selected": X_main_new,
+                "X_main_group_min": feature_min_main,
+                "X_main_group_max": feature_max_main,
+                "X_secondary_actual": X_secondary_sampled,
+                "X_secondary_selected": X_secondary_new,
+                "X_secondary_group_min": feature_min_secondary,
+                "X_secondary_group_max": feature_max_secondary,
+                "selection_method": "fixed_noise_around_sampled_row",
+            }
 
         # -------------------------
         # Step 3: Predict geometry
@@ -95,5 +152,9 @@ class RFAugmentationGenerator:
             n_new_samples,
             X_main_aug.shape[0],
         )
+
+        if return_selection_details:
+            selection_details["sample_within_group_range"] = sample_within_group_range
+            return X_main_aug, X_secondary_aug, y_main_new, y_secondary_new, selection_details
 
         return X_main_aug, X_secondary_aug, y_main_new, y_secondary_new

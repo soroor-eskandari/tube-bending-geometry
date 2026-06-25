@@ -10,6 +10,19 @@ from src.logging.log_utils import log_function
 
 logger = logging.getLogger(__name__)
 
+TSFEL_SKIP_FEATURES = {"kurtosis", "skewness"}
+
+
+def _strip_tsfel_features(cfg: dict, feature_names: set[str]) -> dict:
+    feature_names = {name.lower() for name in feature_names}
+    for _, domain_features in cfg.items():
+        if not isinstance(domain_features, dict):
+            continue
+        for feat_name in list(domain_features.keys()):
+            if feat_name.lower() in feature_names:
+                domain_features.pop(feat_name, None)
+    return cfg
+
 
 class TimeSeriesFeatureExtractor:
 
@@ -18,15 +31,22 @@ class TimeSeriesFeatureExtractor:
     def extract_features(
         df: pd.DataFrame,
         signal_cols: list,
-        tsfel_domains: list = ("statistical", "spectral")
+        tsfel_domains: list = ("statistical", "spectral"),
+        tsfel_included: bool = True
     ) -> pd.DataFrame:
 
-        logger.info("Starting feature extraction (TSFEL + manual)")
+        if tsfel_included:
+            logger.info("Starting feature extraction (TSFEL + manual)")
+        else:
+            logger.info("Starting feature extraction (manual only)")
 
         df = df.copy()
         df["Experiment_ID"] = df["Experiment_ID"].astype(int)
 
-        cfg = tsfel.get_features_by_domain(list(tsfel_domains))
+        cfg = None
+        if tsfel_included:
+            cfg = tsfel.get_features_by_domain(list(tsfel_domains))
+            cfg = _strip_tsfel_features(cfg, TSFEL_SKIP_FEATURES)
 
         features = []
 
@@ -72,21 +92,22 @@ class TimeSeriesFeatureExtractor:
                 # ====================================
                 # 1. TSFEL FEATURES
                 # ====================================
-                try:
-                    tsfel_df = tsfel.time_series_features_extractor(
-                        cfg,
-                        signal,
-                        fs=fs,
-                        verbose=0
-                    )
+                if tsfel_included:
+                    try:
+                        tsfel_df = tsfel.time_series_features_extractor(
+                            cfg,
+                            signal,
+                            fs=fs,
+                            verbose=0
+                        )
 
-                    tsfel_row = tsfel_df.iloc[0]
+                        tsfel_row = tsfel_df.iloc[0]
 
-                    for f_name, value in tsfel_row.items():
-                        row[f"{col}_tsfel_{f_name}"] = value
+                        for f_name, value in tsfel_row.items():
+                            row[f"{col}_tsfel_{f_name}"] = value
 
-                except Exception as e:
-                    logger.warning(f"TSFEL failed | Exp={exp_id}, Col={col}, Error={e}")
+                    except Exception as e:
+                        logger.warning(f"TSFEL failed | Exp={exp_id}, Col={col}, Error={e}")
 
                 # ====================================
                 # 2. MANUAL FEATURES (23)
@@ -98,8 +119,13 @@ class TimeSeriesFeatureExtractor:
                 row[f"{col}_manual_mean"] = np.mean(signal)
                 row[f"{col}_manual_std"] = np.std(signal)
                 row[f"{col}_manual_median"] = np.median(signal)
-                row[f"{col}_manual_skew"] = skew(signal)
-                row[f"{col}_manual_kurtosis"] = kurtosis(signal)
+                if np.allclose(signal, signal[0], rtol=1e-6, atol=1e-8):
+                    row[f"{col}_manual_skew"] = 0.0
+                    row[f"{col}_manual_kurtosis"] = 0.0
+                else:
+                    row[f"{col}_manual_skew"] = skew(signal)
+                    row[f"{col}_manual_kurtosis"] = kurtosis(signal)
+
 
                 # Percentiles
                 row[f"{col}_manual_p10"] = np.percentile(signal, 10)

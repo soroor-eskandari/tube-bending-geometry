@@ -8,7 +8,7 @@ from src.logging.log_utils import log_function
 logger = logging.getLogger(__name__)
 
 
-class RFTrainingDatasetBuilder:
+class RFDatasetBuilder:
 
     # ============================================================
     # PUBLIC ENTRY
@@ -31,13 +31,13 @@ class RFTrainingDatasetBuilder:
         # -------------------------
         # Extract features
         # -------------------------
-        X_main_df = RFTrainingDatasetBuilder._extract_features(
+        X_main_df = RFDatasetBuilder._extract_features(
             machine_movement__df,
             selected_features=main_selected_features,
             tag="MAIN"
         )
 
-        X_secondary_df = RFTrainingDatasetBuilder._extract_features(
+        X_secondary_df = RFDatasetBuilder._extract_features(
             machine_movement__df,
             selected_features=secondary_selected_features,
             tag="SECONDARY"
@@ -64,7 +64,7 @@ class RFTrainingDatasetBuilder:
         # -------------------------
         # Prepare targets
         # -------------------------
-        y_main, y_secondary, aligned_ids = RFTrainingDatasetBuilder._prepare_geometry_targets(
+        y_main, y_secondary, aligned_ids = RFDatasetBuilder._prepare_geometry_targets(
             geometry_df,
             X_main_df["Experiment_ID"].tolist(),
         )
@@ -86,9 +86,6 @@ class RFTrainingDatasetBuilder:
 
         feature_names_main = X_main_df_no_id.columns.tolist()
         feature_names_secondary = X_secondary_df_no_id.columns.tolist()
-
-        logger.info(f"X_main shape: {X_main.shape}")
-        logger.info(f"X_secondary shape: {X_secondary.shape}")
 
         result = (
             X_main,
@@ -137,7 +134,7 @@ class RFTrainingDatasetBuilder:
                 if len(signal) < 5:
                     continue
 
-                features = RFTrainingDatasetBuilder._compute_manual_features(signal)
+                features = RFDatasetBuilder._compute_manual_features(signal)
 
                 for feat_name, value in features.items():
                     if selected_features is None or feat_name in selected_features:

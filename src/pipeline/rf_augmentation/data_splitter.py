@@ -9,7 +9,6 @@ from src.logging.log_utils import log_function
 class DataSplittor:
 
     @staticmethod
-    @log_function
     def splittor(
         geometry_df: pd.DataFrame,
         unique_bending_df: pd.DataFrame,
@@ -53,21 +52,21 @@ class DataSplittor:
             )
 
         # =========================
-        # ADD GROUP ID
-        # unique_bending rows define the groups.
-        # Experiment_Number values such as "[1, 2, 3]"
-        # mean experiments 1, 2, and 3 share Group_ID = row index + 1.
+        # ADD GROUP ID ONLY IF MISSING
+        # If geometry already has Group_ID, use it as the source of truth.
+        # Otherwise, derive it from unique_bending rows.
         # =========================
-        experiment_to_group = DataSplittor._build_experiment_to_group_mapping(
-            unique_bending
-        )
+        if "Group_ID" not in geometry.columns:
+            experiment_to_group = DataSplittor._build_experiment_to_group_mapping(
+                unique_bending
+            )
 
-        experiment_ids = pd.to_numeric(
-            geometry["Experiment_ID"],
-            errors="coerce",
-        )
+            experiment_ids = pd.to_numeric(
+                geometry["Experiment_ID"],
+                errors="coerce",
+            )
 
-        geometry["Group_ID"] = experiment_ids.map(experiment_to_group)
+            geometry["Group_ID"] = experiment_ids.map(experiment_to_group)
 
         if geometry["Group_ID"].isna().any():
             missing_experiment_ids = sorted(

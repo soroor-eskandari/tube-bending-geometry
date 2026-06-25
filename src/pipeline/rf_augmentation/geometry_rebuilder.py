@@ -16,6 +16,7 @@ class GeometryRebuilder:
         y_secondary: np.ndarray,
         angle_values: np.ndarray = None,
         n_original: int | None = None,
+        experiment_ids: list | np.ndarray | None = None,
     ) -> pd.DataFrame:
         """
         Parameters
@@ -33,10 +34,17 @@ class GeometryRebuilder:
         -------
         geometry_df : pd.DataFrame
         """
-
-        logger.info("Rebuilding geometry DataFrame from model outputs")
-
         n_experiments, n_points = y_main.shape
+        if experiment_ids is None:
+            experiment_ids = np.arange(1, n_experiments + 1)
+        else:
+            experiment_ids = list(experiment_ids)
+
+        if len(experiment_ids) != n_experiments:
+            raise ValueError(
+                "experiment_ids length must match number of experiments "
+                f"({n_experiments}), got {len(experiment_ids)}"
+            )
 
         # -------------------------
         # Default angle values
@@ -62,7 +70,7 @@ class GeometryRebuilder:
                 is_synthetic = exp_id >= n_original
             for i in range(n_points):
                 records.append({
-                    "Experiment_ID": exp_id + 1,
+                    "Experiment_ID": experiment_ids[exp_id],
                     "Angle[degree]ORDistance[mm]": angle_values[i],
                     "Secondary-axis [mm]": y_secondary[exp_id, i],
                     "Main-axis [mm]": y_main[exp_id, i],
@@ -70,7 +78,5 @@ class GeometryRebuilder:
                 })
 
         geometry_df = pd.DataFrame(records)
-
-        logger.info(f"Geometry DataFrame shape: {geometry_df.shape}")
 
         return geometry_df

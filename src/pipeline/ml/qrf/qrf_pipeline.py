@@ -5,6 +5,8 @@ import pandas as pd
 import ast
 
 from src.logging.log_utils import log_function
+from src.pipeline.rf_augmentation.io_utils import read_table
+from src.pipeline.rf_augmentation.sensor_data_augmentor import SensorDataAugmentor
 from src.pipeline.ml.qrf.geometry_data_preprocessor import (
     GeometryPreprocessor,
 )
@@ -21,24 +23,78 @@ from src.pipeline.ml.qrf.qrf_evaluator import (
 logger = logging.getLogger(__name__)
 
 
+FEATURE_SAMPLING_SOURCE_SUFFIXES = {
+    "exact": "exact",
+    "within-group-sampling": "within_group_sampling",
+    "overall-sampling": "overall_sampling",
+}
+
+
+def generated_geometry_sources() -> dict[str, Path]:
+    geometry_sources = {}
+    for feature_suffix in FEATURE_SAMPLING_SOURCE_SUFFIXES.values():
+        for sensor_mode in SensorDataAugmentor.all_augmentation_modes():
+            sensor_suffix = SensorDataAugmentor.mode_to_suffix(sensor_mode)
+            geometry_source = f"{feature_suffix}_{sensor_suffix}"
+            geometry_sources[geometry_source] = (
+                Path("data")
+                / "rf_augmented"
+                / f"final_geometry_{geometry_source}.parquet"
+            )
+    return geometry_sources
+
+
+def geometry_source_paths(project_root) -> dict[str, Path]:
+    project_root = Path(project_root)
+    paths = {
+        "real": project_root / "data" / "processed" / "geometry.csv",
+    }
+    paths.update(
+        {
+            source: project_root / relative_path
+            for source, relative_path in generated_geometry_sources().items()
+        }
+    )
+    paths.update(
+        {
+            "augmented_real": paths["exact_raw"],
+            "sampled": paths["within_group_sampling_raw"],
+        }
+    )
+    return paths
+
+
 class QRFPipeline:
 
     @staticmethod
     @log_function
-    def run(project_root):
+    def run(
+        project_root,
+        geometry_source: str = "real",
+        use_mlflow: bool = False,
+        mlflow_tracking_uri: str = None,
+        mlflow_experiment: str = "QRF_Geometry_Model",
+    ):
+        project_root = Path(project_root)
+        geometry_paths = geometry_source_paths(project_root)
+
+        if geometry_source not in geometry_paths:
+            raise ValueError(
+                "geometry_source must be one of: "
+                f"{', '.join(geometry_paths.keys())}. Got: {geometry_source}"
+            )
+
+        geometry_path = geometry_paths[geometry_source]
 
         # ============================================================
         # LOAD DATA
         # ============================================================
 
-        geometry = pd.read_csv(
-            project_root / "data" / "processed" / "geometry.csv"
-        )
+        geometry = read_table(geometry_path)
 
         bending = pd.read_csv(
-            project_root / "data" / "raw" / "unique_bending_setups.csv"
+            project_root / "data" / "processed" / "processed_bending_setup.csv"
         )
-
         result_dir = (
             project_root / "src" / "pipeline" / "ml" / "qrf" / "result"
         )
@@ -79,6 +135,7 @@ class QRFPipeline:
         train_df, test_df = (
             DataSplittor.splittor(
                 geometry_df=geometry_clean,
+                unique_bending_df=bending,
                 test_size=0.2,
                 random_state=42,
             )
@@ -97,6 +154,13 @@ class QRFPipeline:
                 train_df=train_df,
                 test_df=test_df,
                 model_dir=model_dir,
+                paper_name=f"qrf_geometry_{geometry_source}",
+                use_mlflow=use_mlflow,
+                mlflow_tracking_uri=mlflow_tracking_uri,
+                mlflow_experiment=mlflow_experiment,
+                mlflow_tags={
+                    "geometry_source": geometry_source,
+                },
             )
         )
 
@@ -198,7 +262,7 @@ class QRFPipeline:
 
         global_evaluation_df.to_csv(
             result_dir
-            / "qrf_global_metrics.csv",
+            / f"qrf_global_metrics_{geometry_source}.csv",
             index=False,
         )
 
@@ -225,7 +289,7 @@ class QRFPipeline:
 
         per_angle_df.to_csv(
             result_dir
-            / "qrf_per_angle_metrics.csv",
+            / f"qrf_per_angle_metrics_{geometry_source}.csv",
             index=False,
         )
 
@@ -267,7 +331,7 @@ class QRFPipeline:
 
         prediction_details_df.to_csv(
             result_dir
-            / "qrf_prediction_details.csv",
+            / f"qrf_prediction_details_{geometry_source}.csv",
             index=False,
         )
 
@@ -289,4 +353,10 @@ class QRFPipeline:
 
             "prediction_details":
                 prediction_details_df,
+
+            "geometry_source":
+                geometry_source,
+
+            "geometry_path":
+                geometry_path,
         }

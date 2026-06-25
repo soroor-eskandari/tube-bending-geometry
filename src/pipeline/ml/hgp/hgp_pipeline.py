@@ -38,18 +38,33 @@ class HGPipeline:
 
     @staticmethod
     @log_function
-    def run(project_root):
+    def run(project_root, geometry_source: str = "real"):
+        geometry_paths = {
+            "real": project_root / "data" / "processed" / "geometry.csv",
+            "augmented_real": (
+                project_root / "data" / "rf_augmented" / "final_geometry_exact.csv"
+            ),
+            "sampled": (
+                project_root / "data" / "rf_augmented" / "final_geometry_within_group_sampling.csv"
+            ),
+        }
+
+        if geometry_source not in geometry_paths:
+            raise ValueError(
+                "geometry_source must be one of: "
+                f"{', '.join(geometry_paths.keys())}. Got: {geometry_source}"
+            )
+
+        geometry_path = geometry_paths[geometry_source]
 
         # ============================================================
         # LOAD DATA
         # ============================================================
 
-        geometry = pd.read_csv(
-            project_root / "data" / "processed" / "geometry.csv"
-        )
+        geometry = pd.read_csv(geometry_path)
 
         bending = pd.read_csv(
-            project_root / "data" / "raw" / "unique_bending_setups.csv"
+            project_root / "data" / "processed" / "processed_bending_setups.csv"
         )
 
         result_dir = (
@@ -134,6 +149,7 @@ class HGPipeline:
             MeanGPModelTrainer.train(
                 gp_dataset=gp_dataset,
                 model_dir=model_dir,
+                paper_name=f"hgp_mean_geometry_{geometry_source}",
             )
         )
 
@@ -159,6 +175,7 @@ class HGPipeline:
             NoiseGPModelTrainer.train(
                 noise_gp_dataset=noise_gp_dataset,
                 model_dir=model_dir,
+                paper_name=f"hgp_noise_geometry_{geometry_source}",
             )
         )
 
@@ -247,7 +264,7 @@ class HGPipeline:
 
         global_evaluation_df.to_csv(
             result_dir
-            / "hgp_global_metrics.csv",
+            / f"hgp_global_metrics_{geometry_source}.csv",
             index=False,
         )
 
@@ -273,7 +290,7 @@ class HGPipeline:
 
         per_angle_df.to_csv(
             result_dir
-            / "hgp_per_angle_metrics.csv",
+            / f"hgp_per_angle_metrics_{geometry_source}.csv",
             index=False,
         )
 
@@ -315,7 +332,7 @@ class HGPipeline:
 
         prediction_details_df.to_csv(
             result_dir
-            / "hgp_prediction_details.csv",
+            / f"hgp_prediction_details_{geometry_source}.csv",
             index=False,
         )
 
@@ -361,4 +378,10 @@ class HGPipeline:
 
             "prediction_details":
                 prediction_details_df,
+
+            "geometry_source":
+                geometry_source,
+
+            "geometry_path":
+                geometry_path,
         }

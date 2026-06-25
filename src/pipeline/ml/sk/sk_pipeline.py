@@ -33,19 +33,34 @@ class SKPipeline:
 
     @staticmethod
     @log_function
-    def run(project_root):
+    def run(project_root, geometry_source: str = "real"):
 
         project_root = Path(project_root)
+        geometry_paths = {
+            "real": project_root / "data" / "processed" / "geometry.csv",
+            "augmented_real": (
+                project_root / "data" / "rf_augmented" / "final_geometry_exact.csv"
+            ),
+            "sampled": (
+                project_root / "data" / "rf_augmented" / "final_geometry_within_group_sampling.csv"
+            ),
+        }
+
+        if geometry_source not in geometry_paths:
+            raise ValueError(
+                "geometry_source must be one of: "
+                f"{', '.join(geometry_paths.keys())}. Got: {geometry_source}"
+            )
+
+        geometry_path = geometry_paths[geometry_source]
 
         # ============================================================
         # LOAD DATA
         # ============================================================
-        geometry = pd.read_csv(
-            project_root / "data" / "processed" / "geometry.csv"
-        )
+        geometry = pd.read_csv(geometry_path)
 
         bending = pd.read_csv(
-            project_root / "data" / "raw" / "unique_bending_setups.csv"
+            project_root / "data" / "processed" / "processed_bending_setups.csv"
         )
 
         result_dir = (
@@ -124,6 +139,7 @@ class SKPipeline:
             SKModelTrainer.train(
                 sk_dataset=sk_dataset,
                 model_dir=model_dir,
+                paper_name=f"sk_geometry_{geometry_source}",
             )
         )
 
@@ -207,7 +223,7 @@ class SKPipeline:
 
         global_evaluation_df.to_csv(
             result_dir
-            / "sk_global_metrics.csv",
+            / f"sk_global_metrics_{geometry_source}.csv",
             index=False,
         )
 
@@ -232,7 +248,7 @@ class SKPipeline:
 
         per_angle_df.to_csv(
             result_dir
-            / "sk_per_angle_metrics.csv",
+            / f"sk_per_angle_metrics_{geometry_source}.csv",
             index=False,
         )
 
@@ -273,7 +289,7 @@ class SKPipeline:
 
         prediction_details_df.to_csv(
             result_dir
-            / "sk_prediction_details.csv",
+            / f"sk_prediction_details_{geometry_source}.csv",
             index=False,
         )
 
@@ -293,4 +309,6 @@ class SKPipeline:
             "global_metrics": global_evaluation_df,
             "per_angle_metrics": per_angle_df,
             "prediction_details": prediction_details_df,
+            "geometry_source": geometry_source,
+            "geometry_path": geometry_path,
         }

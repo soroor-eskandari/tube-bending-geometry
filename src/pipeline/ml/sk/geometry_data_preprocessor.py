@@ -21,28 +21,28 @@ class GeometryPreprocessor:
         angle_col = "Angle[degree]ORDistance[mm]"
 
         # =========================
-        # CREATE GROUP MAPPING
-        # =========================
-        experiment_to_group = {}
-
-        for group_id, experiments in enumerate(
-            bending["Experiment_Number"],
-            start=1,
-        ):
-
-            # Convert string representation of list to actual list
-            if isinstance(experiments, str):
-                experiments = ast.literal_eval(experiments)
-
-            for exp_id in experiments:
-                experiment_to_group[exp_id] = group_id
-
-        # =========================
         # ADD GROUP ID TO GEOMETRY
         # =========================
-        geometry["Group_ID"] = geometry["Experiment_ID"].map(
-            experiment_to_group
-        )
+        if "group_id" in geometry.columns:
+            geometry["Group_ID"] = geometry["group_id"]
+        else:
+            experiment_to_group = {}
+
+            for group_id, experiments in enumerate(
+                bending["Experiment_Number"],
+                start=1,
+            ):
+
+                # Convert string representation of list to actual list
+                if isinstance(experiments, str):
+                    experiments = ast.literal_eval(experiments)
+
+                for exp_id in experiments:
+                    experiment_to_group[exp_id] = group_id
+
+            geometry["Group_ID"] = geometry["Experiment_ID"].map(
+                experiment_to_group
+            )
 
         # =========================
         # FILTER ANGLES

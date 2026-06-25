@@ -5,7 +5,6 @@ from src.logging.log_utils import log_function
 class RFPreprocessor:
 
     @staticmethod
-    @log_function
     def preprocess_data(
         machine_movement_df: pd.DataFrame,
         bending_df: pd.DataFrame,
@@ -30,7 +29,7 @@ class RFPreprocessor:
 
         # 2. Remove highly correlated features
         if (
-            "CLAMP-DIE_LATERAL_Movement" in machine_movement.columns
+            "CLAMP-DIE_LATERAL_Movement_[mm]" in machine_movement.columns
             and "PRESSURE-DIE_LEFT_AXIAL_Movement_[mm]" in machine_movement.columns
         ):
             machine_movement = machine_movement.drop(

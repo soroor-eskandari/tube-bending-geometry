@@ -9,6 +9,7 @@ from sklearn.metrics import (
     mean_squared_error,
     mean_absolute_error
 )
+from src.pipeline.rf_augmentation.io_utils import write_table
 
 logger = logging.getLogger(__name__)
 
@@ -194,13 +195,19 @@ class RFModelEvaluator:
             "mae": results["mae_global"],
         }])
 
-        global_path = output_dir / f"{prefix}_global_metrics.csv"
-        global_df.to_csv(global_path, index=False)
+        global_path = write_table(
+            global_df,
+            output_dir / f"{prefix}_global_metrics.parquet",
+            index=False,
+        )
 
         # Per-feature
         feature_df = RFModelEvaluator.to_dataframe(results)
-        feature_path = output_dir / f"{prefix}_per_feature_metrics.csv"
-        feature_df.to_csv(feature_path, index=False)
+        feature_path = write_table(
+            feature_df,
+            output_dir / f"{prefix}_per_feature_metrics.parquet",
+            index=False,
+        )
 
         logger.info(f"Saved metrics: {global_path}")
         logger.info(f"Saved metrics: {feature_path}")

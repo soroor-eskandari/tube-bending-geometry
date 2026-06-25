@@ -14,16 +14,19 @@ class RFTrainingDatasetBuilder:
     # PUBLIC ENTRY
     # ============================================================
     @staticmethod
-    @log_function
     def build(
         machine_movement__df: pd.DataFrame,
         geometry_df: pd.DataFrame,
         bending_df: pd.DataFrame,
-        main_selected_features: list,
-        secondary_selected_features: list,
+        main_selected_features: list | None,
+        secondary_selected_features: list | None,
+        return_experiment_ids: bool = False,
     ):
-        main_selected_features = set(main_selected_features)
-        secondary_selected_features = set(secondary_selected_features)
+        if main_selected_features is not None:
+            main_selected_features = set(main_selected_features)
+
+        if secondary_selected_features is not None:
+            secondary_selected_features = set(secondary_selected_features)
 
         # -------------------------
         # Extract features
@@ -87,7 +90,7 @@ class RFTrainingDatasetBuilder:
         logger.info(f"X_main shape: {X_main.shape}")
         logger.info(f"X_secondary shape: {X_secondary.shape}")
 
-        return (
+        result = (
             X_main,
             X_secondary,
             y_main,
@@ -96,13 +99,18 @@ class RFTrainingDatasetBuilder:
             feature_names_secondary,
         )
 
+        if return_experiment_ids:
+            return (*result, aligned_ids)
+
+        return result
+
     # ============================================================
     # FEATURE EXTRACTION (FILTERED)
     # ============================================================
     @staticmethod
     def _extract_features(
         df: pd.DataFrame,
-        selected_features: set,
+        selected_features: set | None,
         tag: str
     ) -> pd.DataFrame:
 
@@ -132,7 +140,7 @@ class RFTrainingDatasetBuilder:
                 features = RFTrainingDatasetBuilder._compute_manual_features(signal)
 
                 for feat_name, value in features.items():
-                    if feat_name in selected_features:
+                    if selected_features is None or feat_name in selected_features:
                         row[f"{col}_{feat_name}"] = value
 
             rows.append(row)

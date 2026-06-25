@@ -1,4 +1,8 @@
+from pathlib import Path
+
 import pandas as pd
+
+from src.pipeline.rf_augmentation.io_utils import write_table
 
 
 class RFSignalSelectionRecorder:
@@ -38,6 +42,7 @@ class RFSignalSelectionRecorder:
         feature_names_secondary: list,
         selection_details: dict,
         synthetic_id_offset: int,
+        synthetic_experiment_ids: list | None = None,
     ) -> list:
         records = []
         records.extend(
@@ -49,6 +54,7 @@ class RFSignalSelectionRecorder:
                 selection_details=selection_details,
                 model_input="main",
                 synthetic_id_offset=synthetic_id_offset,
+                synthetic_experiment_ids=synthetic_experiment_ids,
             )
         )
         records.extend(
@@ -60,16 +66,16 @@ class RFSignalSelectionRecorder:
                 selection_details=selection_details,
                 model_input="secondary",
                 synthetic_id_offset=synthetic_id_offset,
+                synthetic_experiment_ids=synthetic_experiment_ids,
             )
         )
 
         return records
 
     @staticmethod
-    def save(records: list, output_path) -> pd.DataFrame:
+    def save(records: list, output_path) -> Path:
         selection_values_df = pd.DataFrame(records)
-        selection_values_df.to_csv(output_path, index=False)
-        return selection_values_df
+        return write_table(selection_values_df, output_path, index=False)
 
     @staticmethod
     def _build_model_records(
@@ -81,24 +87,32 @@ class RFSignalSelectionRecorder:
         selection_details: dict,
         model_input: str,
         synthetic_id_offset: int,
+        synthetic_experiment_ids: list | None = None,
     ) -> list:
         records = []
 
         actual_values = selection_details[f"X_{model_input}_actual"]
+        paired_actual_values = selection_details.get(f"X_{model_input}_paired_actual")
         selected_values = selection_details[f"X_{model_input}_selected"]
         group_min = selection_details[f"X_{model_input}_group_min"]
         group_max = selection_details[f"X_{model_input}_group_max"]
         sampled_indices = selection_details["sampled_indices"]
         paired_indices = selection_details.get("paired_indices")
+        paired_experiment_ids = selection_details.get("paired_experiment_ids")
         interpolation_weight = selection_details.get("interpolation_weight")
         selection_method = selection_details.get("selection_method", "")
+        feature_sampling_mode = selection_details.get("feature_sampling_mode", "")
+        alpha_min = selection_details.get("alpha_min", "")
+        alpha_max = selection_details.get("alpha_max", "")
 
         for sample_idx in range(selected_values.shape[0]):
             sampled_row_idx = int(sampled_indices[sample_idx])
             base_experiment_id = aligned_ids[sampled_row_idx]
             paired_experiment_id = ""
 
-            if paired_indices is not None:
+            if paired_experiment_ids is not None:
+                paired_experiment_id = paired_experiment_ids[sample_idx]
+            elif paired_indices is not None:
                 paired_row_idx = int(paired_indices[sample_idx])
                 paired_experiment_id = aligned_ids[paired_row_idx]
 
@@ -106,7 +120,11 @@ class RFSignalSelectionRecorder:
             if interpolation_weight is not None:
                 weight = interpolation_weight[sample_idx]
 
-            synthetic_experiment_id = synthetic_id_offset + sample_idx + 1
+            synthetic_experiment_id = (
+                synthetic_experiment_ids[sample_idx]
+                if synthetic_experiment_ids is not None
+                else synthetic_id_offset + sample_idx + 1
+            )
 
             for feature_idx, feature_name in enumerate(feature_names):
                 signal_name, feature_type, input_source = (
@@ -126,10 +144,18 @@ class RFSignalSelectionRecorder:
                     "feature_type": feature_type,
                     "feature_name": feature_name,
                     "actual_value": actual_values[sample_idx, feature_idx],
+                    "paired_actual_value": (
+                        paired_actual_values[sample_idx, feature_idx]
+                        if paired_actual_values is not None
+                        else ""
+                    ),
                     "selected_value": selected_values[sample_idx, feature_idx],
                     "group_min_value": group_min[feature_idx],
                     "group_max_value": group_max[feature_idx],
                     "selection_method": selection_method,
+                    "feature_sampling_mode": feature_sampling_mode,
+                    "alpha_min": alpha_min,
+                    "alpha_max": alpha_max,
                 })
 
         return records

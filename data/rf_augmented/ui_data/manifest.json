@@ -1,0 +1,19 @@
+{
+  "methods": [
+    {
+      "key": "within-group-interpolation",
+      "title": "Within Group Interpolation",
+      "heading": "Interpolated Within Group",
+      "suffix": "within_group_interpolation_raw",
+      "csv": "final_geometry_within_group_interpolation_raw.csv"
+    },
+    {
+      "key": "sensor-augmented",
+      "title": "Sensor Signals Augmented",
+      "heading": "Sensor Signals Augmented",
+      "suffix": "sensor_augmented_noise__time_wrapping__scaling__jittering",
+      "csv": "final_geometry_sensor_augmented_noise__time_wrapping__scaling__jittering.csv"
+    }
+  ],
+  "group_setup_csv": "unique_bending_setups.csv"
+}

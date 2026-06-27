@@ -1,4 +1,5 @@
 import ast
+import json
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -6,16 +7,13 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
-from src.pipeline.rf_augmentation.io_utils import existing_table_path, read_table
-from src.pipeline.rf_augmentation.sensor_data_augmentor import SensorDataAugmentor
-
 
 st.set_page_config(page_title="RF Generated Geometry", layout="wide")
 st.title("RF Generated Geometry by Group")
 
 project_root = Path(__file__).resolve().parent
-data_dir = project_root / "data" / "rf_augmented"
-group_setup_path = project_root / "data" / "raw" / "unique_bending_setups.csv"
+ui_data_dir = project_root / "data" / "rf_augmented" / "ui_data"
+manifest_path = ui_data_dir / "manifest.json"
 
 ANGLE_COL = "Angle[degree]ORDistance[mm]"
 MAIN_COL = "Main-axis [mm]"
@@ -27,37 +25,15 @@ Y_AXIS_MIN_MM = 20
 Y_AXIS_MAX_MM = 23
 Y_AXIS_TICK_STEP_MM = 0.1
 
-METHODS = {
-    "random-within-group": {
-        "title": "Random Within Group",
-        "suffix": "random_within_group_raw",
-    },
-    "within-group-interpolation": {
-        "title": "Within Group Interpolation",
-        "suffix": "within_group_interpolation_raw",
-    },
-}
-
-
-def sensor_mode_suffix(mode: str) -> str:
-    return SensorDataAugmentor.mode_to_suffix(mode)
-
-
-def table_path(prefix: str, suffix: str) -> Path:
-    return existing_table_path(data_dir / f"{prefix}_{suffix}.parquet")
-
-
-def final_geometry_path(suffix: str) -> Path:
-    return table_path("final_geometry", suffix)
-
-
-def selection_values_path(suffix: str) -> Path:
-    return table_path("signal_feature_selected_values", suffix)
+@st.cache_data
+def load_manifest(path: Path, file_mtime: float) -> dict:
+    with path.open("r", encoding="utf-8") as file:
+        return json.load(file)
 
 
 @st.cache_data
 def load_table(path: Path, file_mtime: float) -> pd.DataFrame:
-    return read_table(path)
+    return pd.read_csv(path)
 
 
 @st.cache_data
@@ -71,27 +47,28 @@ def load_existing_table(path: Path) -> pd.DataFrame | None:
     return load_table(path, path.stat().st_mtime)
 
 
-def available_augmented_sensor_modes() -> list[str]:
-    modes = []
-    for mode in SensorDataAugmentor.all_augmentation_modes():
-        if mode == "raw":
-            continue
-        suffix = f"sensor_augmented_{sensor_mode_suffix(mode)}"
-        if final_geometry_path(suffix).exists():
-            modes.append(mode)
-    return modes
+if not manifest_path.exists():
+    st.warning(
+        "Missing deployment UI data. Run "
+        "`2_1_4_run_data_augmented_generator.py` to export "
+        "`data/rf_augmented/ui_data/manifest.json`."
+    )
+    st.stop()
+
+manifest = load_manifest(manifest_path, manifest_path.stat().st_mtime)
+METHODS = {
+    method["key"]: method
+    for method in manifest.get("methods", [])
+}
+group_setup_csv = manifest.get("group_setup_csv")
+group_setup_path = ui_data_dir / group_setup_csv if group_setup_csv else None
 
 
 def available_group_ids() -> list[int]:
     group_ids = set()
-    suffixes = [config["suffix"] for config in METHODS.values()]
-    suffixes.extend(
-        f"sensor_augmented_{sensor_mode_suffix(mode)}"
-        for mode in available_augmented_sensor_modes()
-    )
 
-    for suffix in suffixes:
-        path = final_geometry_path(suffix)
+    for config in METHODS.values():
+        path = ui_data_dir / config["csv"]
         if not path.exists():
             continue
         df = load_table(path, path.stat().st_mtime)
@@ -274,11 +251,11 @@ def show_feature_values(selection_group: pd.DataFrame, method_label: str):
 def render_method_section(
     *,
     title: str,
-    suffix: str,
+    csv: str,
     selected_group: int,
     section_key: str,
 ):
-    geometry_path = final_geometry_path(suffix)
+    geometry_path = ui_data_dir / csv
 
     geometry_df = load_existing_table(geometry_path)
     if geometry_df is None:
@@ -309,14 +286,8 @@ st.sidebar.header("Controls")
 selected_group = st.sidebar.selectbox("Group ID", group_ids)
 metric = st.sidebar.selectbox("Axis", ["Both", "Main", "Secondary"])
 plot_scale = st.sidebar.radio("Plot scale", ["Zoom in", "Zoom out (fixed y-axis)"])
-augmented_modes = available_augmented_sensor_modes()
-selected_augmented_modes = st.sidebar.multiselect(
-    "Sensor augmented modes",
-    augmented_modes,
-    default=augmented_modes[:1],
-)
 
-if group_setup_path.exists():
+if group_setup_path is not None and group_setup_path.exists():
     group_setup_df = load_group_setup(group_setup_path, group_setup_path.stat().st_mtime)
     setup_row_idx = int(selected_group) - 1
     if 0 <= setup_row_idx < len(group_setup_df):
@@ -327,41 +298,24 @@ if group_setup_path.exists():
             hide_index=False,
         )
 
-method_1_col, method_2_col, method_3_col = st.columns(3)
+method_1_col, method_2_col = st.columns(2)
 
 with method_1_col:
-    config = METHODS["random-within-group"]
-    st.write("## Random Within Group")
-    render_method_section(
-        title=config["title"],
-        suffix=config["suffix"],
-        selected_group=int(selected_group),
-        section_key="random-within-group",
-    )
-
-with method_2_col:
     config = METHODS["within-group-interpolation"]
     st.write("## Interpolated Within Group")
     render_method_section(
         title=config["title"],
-        suffix=config["suffix"],
+        csv=config["csv"],
         selected_group=int(selected_group),
         section_key="within-group-interpolation",
     )
 
-with method_3_col:
+with method_2_col:
+    config = METHODS["sensor-augmented"]
     st.write("## Sensor Signals Augmented")
-    if not augmented_modes:
-        st.info("No sensor-augmented generated geometry files found.")
-    else:
-        if not selected_augmented_modes:
-            st.info("Select one or more sensor augmentation modes.")
-
-        for mode in selected_augmented_modes:
-            suffix = f"sensor_augmented_{sensor_mode_suffix(mode)}"
-            render_method_section(
-                title=f"Sensor Signals Augmented ({mode})",
-            suffix=suffix,
-            selected_group=int(selected_group),
-            section_key=f"sensor_augmented_{sensor_mode_suffix(mode)}",
-        )
+    render_method_section(
+        title=config["title"],
+        csv=config["csv"],
+        selected_group=int(selected_group),
+        section_key="sensor-augmented",
+    )

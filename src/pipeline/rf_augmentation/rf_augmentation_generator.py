@@ -15,7 +15,6 @@ class RFAugmentationGenerator:
     """
 
     FEATURE_SAMPLING_MODES = {
-        "random-within-group",
         "within-group-interpolation",
     }
 
@@ -60,20 +59,7 @@ class RFAugmentationGenerator:
         # -------------------------
         # Step 1: Select synthetic feature values
         # -------------------------
-        if feature_sampling_mode == "random-within-group":
-            selection_details = (
-                RFGroupFeatureSelector.sample_independent_features_within_group_range(
-                    X_main=X_main,
-                    X_secondary=X_secondary,
-                    n_new_samples=n_new_samples,
-                    rng=rng,
-                )
-            )
-            X_main_sampled = selection_details["X_main_actual"]
-            X_secondary_sampled = selection_details["X_secondary_actual"]
-            X_main_new = selection_details["X_main_selected"]
-            X_secondary_new = selection_details["X_secondary_selected"]
-        elif feature_sampling_mode == "within-group-interpolation":
+        if feature_sampling_mode == "within-group-interpolation":
             selection_details = (
                 RFGroupFeatureSelector.interpolate_within_group(
                     X_main=X_main,

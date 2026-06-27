@@ -37,6 +37,7 @@ class SensorDataAugmentor:
         "time-wrapping+scaling+jittering",
         "noise+time-wrapping+scaling+jittering",
     }
+    ALL_METHODS_MODE = "+".join(BASE_AUGMENTATION_MODES)
 
     @staticmethod
     @log_function
@@ -137,20 +138,7 @@ class SensorDataAugmentor:
 
     @staticmethod
     def all_augmentation_modes() -> list[str]:
-        modes = ["raw"]
-        base_modes = SensorDataAugmentor.BASE_AUGMENTATION_MODES
-        for size in range(1, len(base_modes) + 1):
-            for mask in range(1, 1 << len(base_modes)):
-                if bin(mask).count("1") != size:
-                    continue
-                modes.append(
-                    "+".join(
-                        mode
-                        for idx, mode in enumerate(base_modes)
-                        if mask & (1 << idx)
-                    )
-                )
-        return modes
+        return ["raw", SensorDataAugmentor.ALL_METHODS_MODE]
 
     @staticmethod
     def _numeric_signal_columns(df: pd.DataFrame) -> list[str]:
@@ -160,6 +148,270 @@ class SensorDataAugmentor:
             for col in df.select_dtypes(include=[np.number]).columns
             if col not in excluded_cols
         ]
+
+    @staticmethod
+    def apply_all_methods_from_group_ranges(
+        df: pd.DataFrame,
+        rng: np.random.Generator,
+    ) -> tuple[pd.DataFrame, dict]:
+        signal_cols = SensorDataAugmentor._numeric_signal_columns(df)
+        if not signal_cols:
+            return df.copy(), {}
+
+        stats = SensorDataAugmentor._group_signal_augmentation_ranges(
+            df,
+            signal_cols,
+        )
+        augmented = SensorDataAugmentor.add_noise_from_group_range(
+            df,
+            signal_cols,
+            rng,
+            stats["noise_std_max"],
+        )
+        augmented = SensorDataAugmentor.apply_time_warping_from_group_range(
+            augmented,
+            signal_cols,
+            rng,
+            stats["gamma_min"],
+            stats["gamma_max"],
+        )
+        augmented = SensorDataAugmentor.apply_scaling_from_group_range(
+            augmented,
+            signal_cols,
+            rng,
+            stats["scale_min"],
+            stats["scale_max"],
+        )
+        augmented = SensorDataAugmentor.apply_jittering_from_group_range(
+            augmented,
+            signal_cols,
+            rng,
+            stats["jitter_std_max"],
+        )
+        return augmented, stats
+
+    @staticmethod
+    def _group_signal_augmentation_ranges(
+        df: pd.DataFrame,
+        signal_cols: list[str],
+    ) -> dict:
+        grouped = df.groupby(SensorDataAugmentor.ID_COL, sort=False)
+        values = df[signal_cols].to_numpy(dtype=float)
+        signal_std = np.nanstd(values, axis=0)
+        signal_std = np.where(np.isfinite(signal_std), signal_std, 0.0)
+
+        noise_limits = []
+        jitter_limits = []
+        scale_rows = []
+        durations = []
+
+        for _, group in grouped:
+            group = group.sort_values(SensorDataAugmentor.TIME_COL)
+            group_values = group[signal_cols].to_numpy(dtype=float)
+
+            if group_values.shape[0] > 1:
+                diff_std = np.nanstd(np.diff(group_values, axis=0), axis=0)
+                diff_std = np.where(np.isfinite(diff_std), diff_std, 0.0)
+                noise_limits.append(0.5 * diff_std)
+
+                rolling_mean = (
+                    pd.DataFrame(group_values)
+                    .rolling(window=5, center=True, min_periods=1)
+                    .mean()
+                    .to_numpy()
+                )
+                residual_std = np.nanstd(group_values - rolling_mean, axis=0)
+                residual_std = np.where(np.isfinite(residual_std), residual_std, 0.0)
+                jitter_limits.append(residual_std)
+
+            exp_std = np.nanstd(group_values, axis=0)
+            exp_std = np.where(np.isfinite(exp_std), exp_std, 0.0)
+            scale_rows.append(exp_std)
+
+            if SensorDataAugmentor.TIME_COL in group:
+                time_values = group[SensorDataAugmentor.TIME_COL].to_numpy(dtype=float)
+                duration = np.nanmax(time_values) - np.nanmin(time_values)
+                if np.isfinite(duration) and duration > 0:
+                    durations.append(duration)
+
+        if noise_limits:
+            noise_std_max = np.nanmax(np.vstack(noise_limits), axis=0)
+        else:
+            noise_std_max = np.zeros(len(signal_cols), dtype=float)
+        if jitter_limits:
+            jitter_std_max = np.nanmax(np.vstack(jitter_limits), axis=0)
+        else:
+            jitter_std_max = np.zeros(len(signal_cols), dtype=float)
+
+        noise_std_max = np.minimum(
+            np.where(np.isfinite(noise_std_max), noise_std_max, 0.0),
+            0.10 * signal_std,
+        )
+        jitter_std_max = np.minimum(
+            np.where(np.isfinite(jitter_std_max), jitter_std_max, 0.0),
+            0.10 * signal_std,
+        )
+
+        scale_matrix = (
+            np.vstack(scale_rows)
+            if scale_rows
+            else np.zeros((1, len(signal_cols)))
+        )
+        scale_reference = np.nanmedian(scale_matrix, axis=0)
+        scale_reference = np.where(scale_reference > 1e-12, scale_reference, np.nan)
+        scale_ratios = scale_matrix / scale_reference
+        scale_min = np.nanmin(scale_ratios, axis=0)
+        scale_max = np.nanmax(scale_ratios, axis=0)
+        scale_min = np.where(np.isfinite(scale_min), scale_min, 1.0)
+        scale_max = np.where(np.isfinite(scale_max), scale_max, 1.0)
+        scale_min = np.clip(scale_min, 0.90, 1.10)
+        scale_max = np.clip(scale_max, 0.90, 1.10)
+        scale_min = np.minimum(scale_min, 1.0)
+        scale_max = np.maximum(scale_max, 1.0)
+
+        if len(durations) > 1:
+            duration_reference = np.median(durations)
+            duration_ratios = np.array(durations) / duration_reference
+            gamma_min = float(np.clip(np.nanmin(duration_ratios), 0.88, 1.12))
+            gamma_max = float(np.clip(np.nanmax(duration_ratios), 0.88, 1.12))
+        else:
+            gamma_min = 1.0
+            gamma_max = 1.0
+
+        return {
+            "signal_cols": signal_cols,
+            "noise_std_max": noise_std_max,
+            "jitter_std_max": jitter_std_max,
+            "scale_min": scale_min,
+            "scale_max": scale_max,
+            "gamma_min": gamma_min,
+            "gamma_max": gamma_max,
+        }
+
+    @staticmethod
+    def add_noise_from_group_range(
+        df: pd.DataFrame,
+        signal_cols: list[str],
+        rng: np.random.Generator,
+        noise_std_max: np.ndarray,
+    ) -> pd.DataFrame:
+        augmented = df.copy()
+
+        for _, index in augmented.groupby(
+            SensorDataAugmentor.ID_COL,
+            sort=False,
+        ).groups.items():
+            std = rng.uniform(
+                low=np.zeros(len(signal_cols), dtype=float),
+                high=noise_std_max,
+            )
+            noise = rng.normal(
+                loc=0.0,
+                scale=std,
+                size=(len(index), len(signal_cols)),
+            )
+            augmented.loc[index, signal_cols] = (
+                augmented.loc[index, signal_cols].to_numpy(dtype=float) + noise
+            )
+
+        return augmented
+
+    @staticmethod
+    def apply_time_warping_from_group_range(
+        df: pd.DataFrame,
+        signal_cols: list[str],
+        rng: np.random.Generator,
+        gamma_min: float,
+        gamma_max: float,
+    ) -> pd.DataFrame:
+        augmented_groups = []
+
+        for _, group in df.groupby(SensorDataAugmentor.ID_COL, sort=False):
+            group = group.sort_values(SensorDataAugmentor.TIME_COL).copy()
+            time_values = group[SensorDataAugmentor.TIME_COL].to_numpy(dtype=float)
+
+            if len(group) < 3 or np.ptp(time_values) <= 0:
+                augmented_groups.append(group)
+                continue
+
+            normalized_time = (time_values - time_values[0]) / (
+                time_values[-1] - time_values[0]
+            )
+            gamma = rng.uniform(gamma_min, gamma_max)
+            warped_time = time_values[0] + (normalized_time ** gamma) * (
+                time_values[-1] - time_values[0]
+            )
+
+            for col in signal_cols:
+                group[col] = np.interp(
+                    warped_time,
+                    time_values,
+                    group[col].to_numpy(),
+                )
+
+            augmented_groups.append(group)
+
+        return pd.concat(augmented_groups, ignore_index=True)[df.columns]
+
+    @staticmethod
+    def apply_scaling_from_group_range(
+        df: pd.DataFrame,
+        signal_cols: list[str],
+        rng: np.random.Generator,
+        scale_min: np.ndarray,
+        scale_max: np.ndarray,
+    ) -> pd.DataFrame:
+        augmented = df.copy()
+
+        for _, index in augmented.groupby(
+            SensorDataAugmentor.ID_COL,
+            sort=False,
+        ).groups.items():
+            factors = rng.uniform(
+                low=scale_min,
+                high=scale_max,
+                size=len(signal_cols),
+            )
+            augmented.loc[index, signal_cols] = (
+                augmented.loc[index, signal_cols].to_numpy(dtype=float) * factors
+            )
+
+        return augmented
+
+    @staticmethod
+    def apply_jittering_from_group_range(
+        df: pd.DataFrame,
+        signal_cols: list[str],
+        rng: np.random.Generator,
+        jitter_std_max: np.ndarray,
+        n_control_points: int = 8,
+    ) -> pd.DataFrame:
+        augmented_groups = []
+
+        for _, group in df.groupby(SensorDataAugmentor.ID_COL, sort=False):
+            group = group.sort_values(SensorDataAugmentor.TIME_COL).copy()
+            n_rows = len(group)
+
+            if n_rows < 2:
+                augmented_groups.append(group)
+                continue
+
+            control_x = np.linspace(0, n_rows - 1, min(n_control_points, n_rows))
+            row_x = np.arange(n_rows)
+
+            for col_idx, col in enumerate(signal_cols):
+                control_std = rng.uniform(0.0, jitter_std_max[col_idx])
+                control_noise = rng.normal(
+                    loc=0.0,
+                    scale=control_std,
+                    size=len(control_x),
+                )
+                smooth_noise = np.interp(row_x, control_x, control_noise)
+                group[col] = group[col].to_numpy(dtype=float) + smooth_noise
+
+            augmented_groups.append(group)
+
+        return pd.concat(augmented_groups, ignore_index=True)[df.columns]
 
     @staticmethod
     def add_small_noise(

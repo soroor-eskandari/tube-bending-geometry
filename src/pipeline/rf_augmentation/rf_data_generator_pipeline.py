@@ -13,7 +13,7 @@ from src.pipeline.rf_augmentation.rf_augmentation_generator import RFAugmentatio
 from src.pipeline.rf_augmentation.geometry_rebuilder import GeometryRebuilder
 from src.pipeline.rf_augmentation.rf_signal_selection_recorder import RFSignalSelectionRecorder
 from src.pipeline.rf_augmentation.sensor_data_augmentor import SensorDataAugmentor
-from src.pipeline.rf_augmentation.io_utils import existing_table_path, read_table, write_table
+from src.pipeline.rf_augmentation.io_utils import read_table, write_table
 
 logger = logging.getLogger(__name__)
 
@@ -46,11 +46,7 @@ class RFDataGeneratorPipeline:
 
     @staticmethod
     def _non_raw_sensor_augmentation_modes() -> list[str]:
-        return [
-            mode
-            for mode in SensorDataAugmentor.all_augmentation_modes()
-            if mode != "raw"
-        ]
+        return [SensorDataAugmentor.ALL_METHODS_MODE]
 
     @staticmethod
     @log_function
@@ -68,7 +64,6 @@ class RFDataGeneratorPipeline:
         project_root = Path(project_root)
         output_dir = Path(output_dir)
         feature_sampling_suffixes = {
-            "random-within-group": "random_within_group",
             "within-group-interpolation": "within_group_interpolation",
             "sensor-augmented": "sensor_augmented",
         }
@@ -214,52 +209,9 @@ class RFDataGeneratorPipeline:
                 augmented_sensor_suffix = SensorDataAugmentor.mode_to_suffix(
                     augmented_sensor_mode
                 )
-                augmented_machine_movement_path = existing_table_path(
-                    project_root
-                    / "data"
-                    / "rf_augmented"
-                    / "sensor_data"
-                    / f"machine_movement_{augmented_sensor_suffix}.parquet"
-                )
-
-                if (
-                    augmented_machine_movement_path.exists()
-                    and not regenerate_sensor_data
-                ):
-                    augmented_machine_movement = read_table(
-                        augmented_machine_movement_path
-                    )
-                else:
-                    if augmented_machine_movement_path.exists():
-                        logger.info(
-                            "Regenerating augmented sensor data for %s.",
-                            augmented_sensor_mode,
-                        )
-                    else:
-                        logger.info(
-                            "Missing augmented sensor data for %s; generating it now.",
-                            augmented_sensor_mode,
-                        )
-                    augmented_machine_movement = SensorDataAugmentor.run(
-                        machine_movement_df=machine_movement_clean,
-                        output_dir=project_root
-                        / "data"
-                        / "rf_augmented"
-                        / "sensor_data",
-                        augmentation_mode=augmented_sensor_mode,
-                        random_state=42,
-                        noise_target_snr_db=sensor_noise_snr_db,
-                    )
-
-                augmented_machine_movement_clean, _ = (
-                    RFPreprocessor.preprocess_data(
-                        machine_movement_df=augmented_machine_movement,
-                        bending_df=bending,
-                    )
-                )
-
                 all_group_results = []
                 all_selection_records = []
+                all_augmented_sensor_groups = []
 
                 for group_idx, group_row in group.iterrows():
                     exp_ids = RFDataGeneratorPipeline._parse_experiment_ids(
@@ -268,9 +220,6 @@ class RFDataGeneratorPipeline:
 
                     machine_group = machine_movement_clean[
                         machine_movement_clean["Experiment_ID"].isin(exp_ids)
-                    ].copy()
-                    augmented_machine_group = augmented_machine_movement_clean[
-                        augmented_machine_movement_clean["Experiment_ID"].isin(exp_ids)
                     ].copy()
                     bending_group = bending_clean[
                         bending_clean["Experiment_ID"].isin(exp_ids)
@@ -281,7 +230,6 @@ class RFDataGeneratorPipeline:
 
                     if (
                         machine_group.empty
-                        or augmented_machine_group.empty
                         or bending_group.empty
                         or geometry_group.empty
                     ):
@@ -290,6 +238,26 @@ class RFDataGeneratorPipeline:
                             f"because one or more filtered datasets are empty."
                         )
                         continue
+
+                    sensor_rng = np.random.default_rng(42000 + group_idx)
+                    (
+                        augmented_machine_group,
+                        sensor_range_details,
+                    ) = SensorDataAugmentor.apply_all_methods_from_group_ranges(
+                        machine_group,
+                        sensor_rng,
+                    )
+                    augmented_machine_group_for_output = augmented_machine_group.copy()
+                    augmented_machine_group_for_output["sensor_augmentation_mode"] = (
+                        augmented_sensor_mode
+                    )
+                    augmented_machine_group_for_output["sensor_mode_suffix"] = (
+                        augmented_sensor_suffix
+                    )
+                    augmented_machine_group_for_output["group_id"] = group_idx + 1
+                    all_augmented_sensor_groups.append(
+                        augmented_machine_group_for_output
+                    )
 
                     try:
                         (
@@ -409,6 +377,7 @@ class RFDataGeneratorPipeline:
                             "X_secondary_group_max": np.max(X_sec_selected, axis=0),
                             "selection_method": "sensor_augmented_features",
                             "feature_sampling_mode": feature_sampling_mode,
+                            "sensor_range_details": sensor_range_details,
                         }
                         all_selection_records.extend(
                             RFSignalSelectionRecorder.build_records(
@@ -471,6 +440,20 @@ class RFDataGeneratorPipeline:
                     all_group_results,
                     ignore_index=True,
                 )
+                if all_augmented_sensor_groups:
+                    augmented_sensor_df = pd.concat(
+                        all_augmented_sensor_groups,
+                        ignore_index=True,
+                    )
+                    write_table(
+                        augmented_sensor_df,
+                        project_root
+                        / "data"
+                        / "rf_augmented"
+                        / "sensor_data"
+                        / f"machine_movement_{augmented_sensor_suffix}.parquet",
+                        index=False,
+                    )
                 augmented_output_suffix = (
                     f"{feature_sampling_suffixes[feature_sampling_mode]}_"
                     f"{augmented_sensor_suffix}"

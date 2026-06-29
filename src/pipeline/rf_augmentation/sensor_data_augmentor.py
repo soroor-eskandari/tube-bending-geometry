@@ -191,6 +191,58 @@ class SensorDataAugmentor:
         return augmented, stats
 
     @staticmethod
+    def apply_all_methods_from_reference_ranges(
+        df: pd.DataFrame,
+        reference_df: pd.DataFrame,
+        rng: np.random.Generator,
+    ) -> tuple[pd.DataFrame, dict]:
+        signal_cols = SensorDataAugmentor._numeric_signal_columns(df)
+        if not signal_cols:
+            return df.copy(), {}
+
+        reference_signal_cols = [
+            col for col in signal_cols if col in reference_df.columns
+        ]
+        if reference_signal_cols != signal_cols:
+            missing_cols = sorted(set(signal_cols) - set(reference_signal_cols))
+            raise ValueError(
+                "reference_df is missing signal columns required for augmentation: "
+                f"{missing_cols}"
+            )
+
+        stats = SensorDataAugmentor._group_signal_augmentation_ranges(
+            reference_df,
+            signal_cols,
+        )
+        augmented = SensorDataAugmentor.add_noise_from_group_range(
+            df,
+            signal_cols,
+            rng,
+            stats["noise_std_max"],
+        )
+        augmented = SensorDataAugmentor.apply_time_warping_from_group_range(
+            augmented,
+            signal_cols,
+            rng,
+            stats["gamma_min"],
+            stats["gamma_max"],
+        )
+        augmented = SensorDataAugmentor.apply_scaling_from_group_range(
+            augmented,
+            signal_cols,
+            rng,
+            stats["scale_min"],
+            stats["scale_max"],
+        )
+        augmented = SensorDataAugmentor.apply_jittering_from_group_range(
+            augmented,
+            signal_cols,
+            rng,
+            stats["jitter_std_max"],
+        )
+        return augmented, stats
+
+    @staticmethod
     def _group_signal_augmentation_ranges(
         df: pd.DataFrame,
         signal_cols: list[str],

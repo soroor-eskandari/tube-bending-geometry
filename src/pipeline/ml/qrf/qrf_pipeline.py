@@ -1,8 +1,8 @@
-import numpy as np
 from pathlib import Path
 import logging
 import pandas as pd
 import ast
+import json
 
 from src.logging.log_utils import log_function
 from src.pipeline.rf_augmentation.io_utils import read_table
@@ -64,6 +64,28 @@ def geometry_source_paths(project_root) -> dict[str, Path]:
     return paths
 
 
+def qrf_training_geometry_sources(project_root) -> dict[str, Path]:
+    project_root = Path(project_root)
+    ui_data_dir = project_root / "data" / "rf_augmented" / "ui_data"
+    manifest_path = ui_data_dir / "manifest.json"
+
+    paths = {
+        "real": project_root / "data" / "processed" / "geometry.csv",
+    }
+
+    with manifest_path.open() as manifest_file:
+        manifest = json.load(manifest_file)
+
+    paths.update(
+        {
+            method["suffix"]: ui_data_dir / method["csv"]
+            for method in manifest["methods"]
+        }
+    )
+
+    return paths
+
+
 class QRFPipeline:
 
     @staticmethod
@@ -71,20 +93,32 @@ class QRFPipeline:
     def run(
         project_root,
         geometry_source: str = "real",
+        geometry_path=None,
+        qrf_params: dict = None,
         use_mlflow: bool = False,
         mlflow_tracking_uri: str = None,
         mlflow_experiment: str = "QRF_Geometry_Model",
+        use_experiment_split: bool = False,
+        train_exp: list[int] | None = None,
+        test_exp: list[int] | None = None,
     ):
         project_root = Path(project_root)
-        geometry_paths = geometry_source_paths(project_root)
+        qrf_params = qrf_params or {}
 
-        if geometry_source not in geometry_paths:
-            raise ValueError(
-                "geometry_source must be one of: "
-                f"{', '.join(geometry_paths.keys())}. Got: {geometry_source}"
-            )
+        if geometry_path is None:
+            geometry_paths = geometry_source_paths(project_root)
 
-        geometry_path = geometry_paths[geometry_source]
+            if geometry_source not in geometry_paths:
+                raise ValueError(
+                    "geometry_source must be one of: "
+                    f"{', '.join(geometry_paths.keys())}. Got: {geometry_source}"
+                )
+
+            geometry_path = geometry_paths[geometry_source]
+        else:
+            geometry_path = Path(geometry_path)
+            if not geometry_path.is_absolute():
+                geometry_path = project_root / geometry_path
 
         # ============================================================
         # LOAD DATA
@@ -138,6 +172,9 @@ class QRFPipeline:
                 unique_bending_df=bending,
                 test_size=0.2,
                 random_state=42,
+                use_experiment_split=use_experiment_split,
+                train_exp=train_exp,
+                test_exp=test_exp,
             )
         )
 
@@ -155,10 +192,12 @@ class QRFPipeline:
                 test_df=test_df,
                 model_dir=model_dir,
                 paper_name=f"qrf_geometry_{geometry_source}",
+                **qrf_params,
                 use_mlflow=use_mlflow,
                 mlflow_tracking_uri=mlflow_tracking_uri,
                 mlflow_experiment=mlflow_experiment,
                 mlflow_tags={
+                    "Dataset": geometry_source,
                     "geometry_source": geometry_source,
                 },
             )
@@ -179,8 +218,8 @@ class QRFPipeline:
                     training_result["main"]["y_true"]
                 ),
 
-                y_pred_mean=(
-                    training_result["main"]["y_pred_mean"]
+                y_pred_median=(
+                    training_result["main"]["y_pred_median"]
                 ),
 
                 y_pred_lower=(
@@ -217,8 +256,8 @@ class QRFPipeline:
                     training_result["secondary"]["y_true"]
                 ),
 
-                y_pred_mean=(
-                    training_result["secondary"]["y_pred_mean"]
+                y_pred_median=(
+                    training_result["secondary"]["y_pred_median"]
                 ),
 
                 y_pred_lower=(

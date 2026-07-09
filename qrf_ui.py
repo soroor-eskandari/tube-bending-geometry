@@ -1,4 +1,5 @@
 from pathlib import Path
+import json
 
 import joblib
 import matplotlib.pyplot as plt
@@ -9,9 +10,8 @@ from matplotlib.lines import Line2D
 
 from src.pipeline.ml.qrf.data_splittor import DataSplittor
 from src.pipeline.ml.qrf.geometry_data_preprocessor import GeometryPreprocessor
-from src.pipeline.ml.qrf.qrf_pipeline import geometry_source_paths
+from src.pipeline.ml.qrf.qrf_pipeline import qrf_training_geometry_sources
 from src.pipeline.rf_augmentation.io_utils import read_table
-from src.pipeline.rf_augmentation.sensor_data_augmentor import SensorDataAugmentor
 
 
 st.set_page_config(
@@ -25,21 +25,20 @@ project_root = Path(__file__).resolve().parent
 result_dir = project_root / "src" / "pipeline" / "ml" / "qrf" / "result"
 model_dir = project_root / "src" / "pipeline" / "ml" / "model"
 
-FEATURE_VALUE_OPTIONS = {
-    "exact": "exact",
-    "within-group-sampling": "within_group_sampling",
-    "overall-sampling": "overall_sampling",
+DATASET_LABELS = {
+    "real": "Real geometry",
+    "within_group_interpolation_raw": "Within group interpolation",
+    "sensor_augmented_noise__time_wrapping__scaling__jittering": (
+        "Sensor augmented"
+    ),
 }
 
 
-def mode_label(mode: str) -> str:
-    return mode
-
-
-def source_from_controls(feature_value: str, augmentation_mode: str) -> str:
-    feature_suffix = FEATURE_VALUE_OPTIONS[feature_value]
-    sensor_suffix = SensorDataAugmentor.mode_to_suffix(augmentation_mode)
-    return f"{feature_suffix}_{sensor_suffix}"
+def dataset_label(geometry_source: str) -> str:
+    return DATASET_LABELS.get(
+        geometry_source,
+        geometry_source.replace("__", " + ").replace("_", " ").title(),
+    )
 
 
 def format_group(group_id) -> str:
@@ -52,8 +51,8 @@ def load_csv(path, file_mtime):
 
 
 @st.cache_data
-def load_split_metadata(geometry_source: str, geometry_mtime: float):
-    geometry_path = geometry_source_paths(project_root)[geometry_source]
+def load_split_metadata(geometry_path: str, geometry_mtime: float):
+    geometry_path = Path(geometry_path)
     geometry_df = read_table(geometry_path)
     bending_df = pd.read_csv(
         project_root / "data" / "processed" / "processed_bending_setup.csv"
@@ -137,13 +136,25 @@ def load_qrf_models(geometry_source: str, main_mtime: float, secondary_mtime: fl
     return main_model, secondary_model
 
 
+@st.cache_data
+def load_qrf_feature_columns(config_path: str, config_mtime: float) -> list[str]:
+    with open(config_path) as config_file:
+        config = json.load(config_file)
+    return config["feature_columns"]
+
+
 def predict_split_group(split_df: pd.DataFrame, geometry_source: str) -> pd.DataFrame:
     paper_name = f"qrf_geometry_{geometry_source}"
     main_model_path = model_dir / f"qrf_main_axis_{paper_name}.pkl"
     secondary_model_path = model_dir / f"qrf_secondary_axis_{paper_name}.pkl"
+    config_path = model_dir / f"qrf_config_{paper_name}.json"
 
     if not main_model_path.exists() or not secondary_model_path.exists():
         st.warning(f"Missing saved QRF models for `{geometry_source}`.")
+        st.stop()
+
+    if not config_path.exists():
+        st.warning(f"Missing saved QRF config for `{geometry_source}`.")
         st.stop()
 
     main_model, secondary_model = load_qrf_models(
@@ -151,9 +162,13 @@ def predict_split_group(split_df: pd.DataFrame, geometry_source: str) -> pd.Data
         main_model_path.stat().st_mtime,
         secondary_model_path.stat().st_mtime,
     )
+    feature_columns = load_qrf_feature_columns(
+        str(config_path),
+        config_path.stat().st_mtime,
+    )
 
     angle_col = "Angle[degree]ORDistance[mm]"
-    X = split_df[[angle_col]]
+    X = split_df[feature_columns]
 
     def predict_target(model, target_col: str, target_name: str) -> pd.DataFrame:
         return pd.DataFrame(
@@ -184,35 +199,27 @@ def predict_split_group(split_df: pd.DataFrame, geometry_source: str) -> pd.Data
 
 st.sidebar.header("Controls")
 
-feature_value = st.sidebar.radio(
-    "Feature values",
-    list(FEATURE_VALUE_OPTIONS),
+geometry_sources = qrf_training_geometry_sources(project_root)
+geometry_source = st.sidebar.selectbox(
+    "Dataset",
+    list(geometry_sources),
+    format_func=dataset_label,
 )
 
-augmentation_mode = st.sidebar.selectbox(
-    "Feature augmentation",
-    SensorDataAugmentor.all_augmentation_modes(),
-    format_func=mode_label,
-)
-
-geometry_source = source_from_controls(
-    feature_value=feature_value,
-    augmentation_mode=augmentation_mode,
-)
+geometry_path = geometry_sources[geometry_source]
 
 st.sidebar.markdown(
-    "Showing "
-    f"`{feature_value}` feature values with `{augmentation_mode}` augmentation."
+    "Using "
+    f"`{geometry_path.relative_to(project_root)}`."
 )
 
 prediction_path = result_dir / f"qrf_prediction_details_{geometry_source}.csv"
-geometry_path = geometry_source_paths(project_root).get(geometry_source)
 
 if not prediction_path.exists():
     st.warning(f"Missing QRF prediction file: {prediction_path}")
     st.stop()
 
-if geometry_path is None or not geometry_path.exists():
+if not geometry_path.exists():
     st.warning(f"Missing geometry source file for `{geometry_source}`.")
     st.stop()
 
@@ -220,7 +227,7 @@ prediction_df = load_csv(prediction_path, prediction_path.stat().st_mtime)
 prediction_df.columns = [c.strip() for c in prediction_df.columns]
 
 train_df, test_df = load_split_metadata(
-    geometry_source,
+    str(geometry_path),
     geometry_path.stat().st_mtime,
 )
 

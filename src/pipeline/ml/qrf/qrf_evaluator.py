@@ -16,7 +16,7 @@ class QRFModelEvaluator:
     @log_function
     def evaluate(
         y_true: np.ndarray,
-        y_pred_mean: np.ndarray,
+        y_pred_median: np.ndarray,
         y_pred_lower: np.ndarray,
         y_pred_upper: np.ndarray,
         target_name: str,
@@ -31,19 +31,19 @@ class QRFModelEvaluator:
 
         r2 = r2_score(
             y_true,
-            y_pred_mean,
+            y_pred_median,
         )
 
         mse = mean_squared_error(
             y_true,
-            y_pred_mean,
+            y_pred_median,
         )
 
         rmse = np.sqrt(mse)
 
         mae = mean_absolute_error(
             y_true,
-            y_pred_mean,
+            y_pred_median,
         )
 
         inside_interval = (
@@ -153,8 +153,8 @@ class QRFModelEvaluator:
                     "y_true":
                         y_true,
 
-                    "y_pred_mean":
-                        y_pred_mean,
+                    "y_pred_median":
+                        y_pred_median,
 
                     "y_pred_lower":
                         y_pred_lower,
@@ -185,7 +185,7 @@ class QRFModelEvaluator:
                 group_mse = (
                     mean_squared_error(
                         group["y_true"],
-                        group["y_pred_mean"],
+                        group["y_pred_median"],
                     )
                 )
 
@@ -205,7 +205,7 @@ class QRFModelEvaluator:
                         "r2":
                             r2_score(
                                 group["y_true"],
-                                group["y_pred_mean"],
+                                group["y_pred_median"],
                             ),
 
                         "rmse":
@@ -214,7 +214,7 @@ class QRFModelEvaluator:
                         "mae":
                             mean_absolute_error(
                                 group["y_true"],
-                                group["y_pred_mean"],
+                                group["y_pred_median"],
                             ),
 
                         "mse":

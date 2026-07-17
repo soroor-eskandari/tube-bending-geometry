@@ -112,6 +112,11 @@ def compute_metrics(df: pd.DataFrame) -> dict[str, float]:
             "expected_coverage": 0.90,
             "calibration_error": np.nan,
             "mean_interval_width": np.nan,
+            "rmse_median": np.nan,
+            "mae_median": np.nan,
+            "bias": np.nan,
+            "abs_bias": np.nan,
+            "residual_std": np.nan,
         }
 
     inside = (
@@ -120,11 +125,17 @@ def compute_metrics(df: pd.DataFrame) -> dict[str, float]:
     )
     coverage = inside.mean()
     expected_coverage = 0.90
+    residual = df["y_pred_mean"] - df["y_true"]
     return {
         "coverage": coverage,
         "expected_coverage": expected_coverage,
         "calibration_error": abs(coverage - expected_coverage),
         "mean_interval_width": (df["y_pred_upper"] - df["y_pred_lower"]).mean(),
+        "rmse_median": np.sqrt(np.mean(np.square(residual))),
+        "mae_median": np.mean(np.abs(residual)),
+        "bias": residual.mean(),
+        "abs_bias": abs(residual.mean()),
+        "residual_std": residual.std(ddof=0),
     }
 
 
@@ -412,6 +423,13 @@ class QRFVisualizer:
         c2.metric("Expected Coverage", f"{metrics['expected_coverage']:.3f}")
         c3.metric("Calibration Error", f"{metrics['calibration_error']:.3f}")
         c4.metric("Mean Interval Width", f"{metrics['mean_interval_width']:.3f}")
+
+        c1, c2, c3, c4, c5 = st.columns(5)
+        c1.metric("Standard Deviation", f"{metrics['residual_std']:.3f}")
+        c2.metric("RMSE Median", f"{metrics['rmse_median']:.3f}")
+        c3.metric("MAE Median", f"{metrics['mae_median']:.3f}")
+        c4.metric("Bias", f"{metrics['bias']:.3f}")
+        c5.metric("Abs Bias", f"{metrics['abs_bias']:.3f}")
 
 
 visualizer = QRFVisualizer(

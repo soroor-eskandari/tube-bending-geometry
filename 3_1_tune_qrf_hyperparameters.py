@@ -5,10 +5,10 @@ from pathlib import Path
 
 import pandas as pd
 
-from src.pipeline.ml.qrf.data_splittor import DataSplittor
-from src.pipeline.ml.qrf.geometry_data_preprocessor import GeometryPreprocessor
-from src.pipeline.ml.qrf.qrf_model_trainer import QRFModelTrainer
-from src.pipeline.ml.qrf.qrf_pipeline import qrf_training_geometry_sources
+from pipeline.ml.qrf.mode.experiments.data_splittor import DataSplittor
+from pipeline.ml.qrf.mode.experiments.geometry_data_preprocessor import GeometryPreprocessor
+from pipeline.ml.qrf.mode.experiments.qrf_model_trainer import QRFModelTrainer
+from pipeline.ml.qrf.mode.experiments.qrf_pipeline import qrf_training_geometry_sources
 from src.pipeline.rf_augmentation.io_utils import read_table
 
 

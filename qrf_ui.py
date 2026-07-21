@@ -8,9 +8,9 @@ import pandas as pd
 import streamlit as st
 from matplotlib.lines import Line2D
 
-from src.pipeline.ml.qrf.data_splittor import DataSplittor
-from src.pipeline.ml.qrf.geometry_data_preprocessor import GeometryPreprocessor
-from src.pipeline.ml.qrf.qrf_pipeline import qrf_training_geometry_sources
+from pipeline.ml.qrf.mode.experiments.data_splittor import DataSplittor
+from pipeline.ml.qrf.mode.experiments.geometry_data_preprocessor import GeometryPreprocessor
+from pipeline.ml.qrf.mode.experiments.qrf_pipeline import qrf_training_geometry_sources
 from src.pipeline.rf_augmentation.io_utils import read_table
 
 
@@ -248,6 +248,12 @@ split_name = st.sidebar.radio(
     horizontal=True,
 )
 
+plot_mode = st.sidebar.radio(
+    "Plot mode",
+    ["All points", "Experiment signals"],
+    horizontal=True,
+)
+
 split_df = test_df if split_name == "test" else train_df
 available_groups = sorted(split_df["Group_ID"].dropna().astype(int).unique().tolist())
 
@@ -287,9 +293,24 @@ targets = [
 
 
 class QRFVisualizer:
-    def __init__(self, prediction_df, angle_col):
+    prediction_linewidth = 4.0
+    experiment_signal_colors = [
+        "#6F4E7C",
+        "#2E7D32",
+        "#C2185B",
+        "#7A6F1A",
+        "#6A4C3B",
+        "#00897B",
+        "#8E24AA",
+        "#558B2F",
+        "#AD1457",
+        "#5D4037",
+    ]
+
+    def __init__(self, prediction_df, angle_col, plot_mode):
         self.prediction_df = prediction_df
         self.angle_col = angle_col
+        self.plot_mode = plot_mode
 
     def prepare_data(self, target_name):
         target_predictions = self.prediction_df[
@@ -356,36 +377,88 @@ class QRFVisualizer:
             alpha=0.22,
             label="Prediction Interval",
         )
-        ax.plot(x, y_pred_mean, color="#FF8C00", linewidth=2.5, label="Prediction")
         ax.plot(
             x,
-            y_true,
-            color="#025BFF",
-            linewidth=2,
-            linestyle="--",
-            alpha=0.9,
-            label="Actual",
+            y_pred_mean,
+            color="#FF8C00",
+            linewidth=self.prediction_linewidth,
+            label="Prediction",
         )
-        ax.scatter(
-            raw_inside_df["display_angle"],
-            raw_inside_df["y_true"],
-            color="#3A58C3",
-            s=14,
-            marker="o",
-            alpha=0.2,
-            label="_nolegend_",
-            zorder=8,
-        )
-        ax.scatter(
-            raw_outside_df["display_angle"],
-            raw_outside_df["y_true"],
-            color="red",
-            s=18,
-            marker="o",
-            alpha=0.85,
-            label="_nolegend_",
-            zorder=10,
-        )
+
+        if self.plot_mode == "Experiment signals":
+            signal_ids = (
+                raw_target_df["Experiment_ID"]
+                .dropna()
+                .drop_duplicates()
+                .sort_values()
+                .tolist()
+            )
+            for color_index, experiment_id in enumerate(signal_ids):
+                signal_color = self.experiment_signal_colors[
+                    color_index % len(self.experiment_signal_colors)
+                ]
+                signal_df = raw_target_df[
+                    raw_target_df["Experiment_ID"] == experiment_id
+                ].sort_values(self.angle_col)
+                ax.plot(
+                    signal_df[self.angle_col],
+                    signal_df["y_true"],
+                    color=signal_color,
+                    linewidth=1.1,
+                    alpha=0.35,
+                    label="_nolegend_",
+                    zorder=7,
+                )
+                ax.scatter(
+                    signal_df[self.angle_col],
+                    signal_df["y_true"],
+                    color=signal_color,
+                    s=12,
+                    marker="o",
+                    alpha=0.35,
+                    label="_nolegend_",
+                    zorder=8,
+                )
+            ax.plot(
+                x,
+                y_true,
+                color="#025BFF",
+                linewidth=3.2,
+                linestyle="--",
+                alpha=0.95,
+                label="Actual",
+                zorder=11,
+            )
+        else:
+            ax.plot(
+                x,
+                y_true,
+                color="#025BFF",
+                linewidth=2,
+                linestyle="--",
+                alpha=0.9,
+                label="Actual",
+            )
+            ax.scatter(
+                raw_inside_df["display_angle"],
+                raw_inside_df["y_true"],
+                color="#3A58C3",
+                s=14,
+                marker="o",
+                alpha=0.2,
+                label="_nolegend_",
+                zorder=8,
+            )
+            ax.scatter(
+                raw_outside_df["display_angle"],
+                raw_outside_df["y_true"],
+                color="red",
+                s=18,
+                marker="o",
+                alpha=0.85,
+                label="_nolegend_",
+                zorder=10,
+            )
 
         ax.set_title(
             f"{target_name} - QRF Uncertainty Estimation",
@@ -401,18 +474,37 @@ class QRFVisualizer:
 
         legend_elements = [
             Line2D([0], [0], color="#4C72B0", lw=10, alpha=0.22, label="Prediction Interval"),
-            Line2D([0], [0], color="#FF8C00", lw=2.5, label="Prediction"),
-            Line2D([0], [0], color="#025BFF", lw=2, linestyle="--", label="Actual"),
-            Line2D(
-                [0],
-                [0],
-                marker="o",
-                color="w",
-                markerfacecolor="red",
-                markersize=7,
-                label="Outside Interval",
-            ),
+            Line2D([0], [0], color="#FF8C00", lw=self.prediction_linewidth, label="Prediction"),
         ]
+        if self.plot_mode == "Experiment signals":
+            legend_elements.append(
+                Line2D(
+                    [0],
+                    [0],
+                    color=self.experiment_signal_colors[0],
+                    lw=1.1,
+                    alpha=0.35,
+                    label="Experiment signals",
+                )
+            )
+            legend_elements.append(
+                Line2D([0], [0], color="#025BFF", lw=3.2, linestyle="--", label="Actual")
+            )
+        else:
+            legend_elements.extend(
+                [
+                    Line2D([0], [0], color="#025BFF", lw=2, linestyle="--", label="Actual"),
+                    Line2D(
+                        [0],
+                        [0],
+                        marker="o",
+                        color="w",
+                        markerfacecolor="red",
+                        markersize=7,
+                        label="Outside Interval",
+                    ),
+                ]
+            )
         ax.legend(handles=legend_elements, frameon=True, facecolor="white", edgecolor="lightgray")
         plt.tight_layout()
         st.pyplot(fig)
@@ -435,6 +527,7 @@ class QRFVisualizer:
 visualizer = QRFVisualizer(
     prediction_df=prediction_df,
     angle_col="angle",
+    plot_mode=plot_mode,
 )
 
 for target in targets:

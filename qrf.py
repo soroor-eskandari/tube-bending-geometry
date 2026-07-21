@@ -1,22 +1,12 @@
 import pandas as pd
-from src.ml.quantile_random_forest.trainer import QRFTrainer
-from src.ml.quantile_random_forest.predictor import QRFPredictor
-from src.ml.quantile_random_forest.config import QRF_CONFIG
 
-# Load data
-df = pd.read_csv(r"/Users/soroureskandari/Master Thesis /tube-bending-geometry/data/rf_augmented/geometry_augmented.csv")
+file_path = "/Users/soroureskandari/Master Thesis /tube-bending-geometry/data/raw/unique_bending_setups.csv"
 
-# Train
-trainer = QRFTrainer(QRF_CONFIG)
+df = pd.read_csv(file_path)
 
-X_train, X_test, y_sec_train, y_sec_test, y_main_train, y_main_test = trainer.split_data(df)
+df["Group_ID"] = range(1, len(df) + 1)
 
-trainer.fit(X_train, y_sec_train, y_main_train)
+df.to_csv(file_path, index=False)
 
-# Predict intervals for 45 angles
-predictor = QRFPredictor(trainer.get_models())
-
-angles = sorted(df["Angle[degree]ORDistance[mm]"].unique())
-interval_df = predictor.predict_on_grid(angles)
-
-print(interval_df.head())
+print("Group_ID column added and file saved.")
+print(df.head())

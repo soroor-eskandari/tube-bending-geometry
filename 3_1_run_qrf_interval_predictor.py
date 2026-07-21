@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from src.pipeline.ml.qrf.qrf_pipeline import (
+from pipeline.ml.qrf.mode.experiments.qrf_pipeline import (
     QRFPipeline,
     qrf_training_geometry_sources,
 )

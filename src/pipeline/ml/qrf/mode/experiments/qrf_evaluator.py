@@ -42,8 +42,7 @@ def evaluate_predictions(
             mean_squared_error(
                 y_true,
                 y_median,
-                squared=False,
-            )
+            ) ** 0.5
         ),
         "mae": float(
             mean_absolute_error(

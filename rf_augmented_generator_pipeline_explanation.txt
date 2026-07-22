@@ -1,0 +1,984 @@
+Purpose
+=======
+
+2_1_4_run_data_augmented_generator.py is the actual RF-based data generation script.
+
+Its job is to use already-trained Random Forest models to create augmented final geometry data for each bending setup group.
+
+Business question answered by this script:
+
+How can we expand sparse bending setup groups so each group has a target number of geometry samples, using trained RF models to predict realistic main-axis and secondary-axis geometry profiles?
+
+The script generates geometry by two methods:
+
+1. within-group-interpolation
+2. sensor-augmented
+
+Then it exports CSV files for the Streamlit/UI layer.
+
+
+High-Level Logic
+================
+
+The pipeline is:
+
+1. Set generation configuration.
+2. Run generation for each sensor mode and each generation mode.
+3. Load trained RF models from the previous training stage.
+4. Load original machine, bending, geometry, and group setup data.
+5. Load selected feature types from greedy search.
+6. Preprocess machine and bending data.
+7. Build RF features.
+8. For each bending setup group:
+   - count real experiments
+   - calculate how many synthetic samples are missing
+   - generate only the missing samples
+   - predict synthetic geometry with the trained RF models
+   - rebuild the geometry table in long format
+9. Save generated geometry tables.
+10. Save feature-selection trace tables.
+11. Export final CSV files for the Streamlit UI.
+
+
+Entry Script
+============
+
+Main file:
+
+    2_1_4_run_data_augmented_generator.py
+
+The script sets:
+
+    project_root = Path(".")
+    output_dir = project_root / "data" / "rf_augmented"
+    n_new_samples = 6
+    generation_modes = (
+        "within-group-interpolation",
+        "sensor-augmented",
+    )
+    include_all_features = False
+    sensor_augmentation_modes = ["raw"]
+    sensor_noise_snr_db = 40.0
+
+Business meaning:
+
+- n_new_samples=6 means each bending setup group should end with 6 total samples if possible.
+- generation_modes contains two ways to create synthetic samples.
+- include_all_features=False means the generation uses ranked feature subsets, not every possible feature.
+- sensor_augmentation_modes=["raw"] means RFDataGeneratorPipeline is called with raw sensor mode. Inside the sensor-augmented generation branch, the code still applies the full sensor augmentation method internally.
+- sensor_noise_snr_db=40.0 is passed into the generator pipeline, but the active sensor-augmented branch uses group/reference-range augmentation helpers rather than this parameter directly.
+
+The script loops:
+
+    for sensor_augmentation_mode in sensor_augmentation_modes:
+        for feature_sampling_mode in generation_modes:
+            RFDataGeneratorPipeline.run(...)
+
+Current effective runs:
+
+    raw + within-group-interpolation
+    raw + sensor-augmented
+
+
+Step 1: Export Configuration
+============================
+
+After generation finishes, the script calls:
+
+    export_streamlit_ui_data(project_root=project_root, output_dir=output_dir)
+
+This function prepares UI-friendly CSV files under:
+
+    data/rf_augmented/ui_data/
+
+The expected exported files are:
+
+    final_geometry_within_group_interpolation_raw.csv
+    final_geometry_sensor_augmented_noise__time_wrapping__scaling__jittering.csv
+    unique_bending_setups.csv
+    manifest.json
+
+Business logic:
+
+The model generation pipeline saves data in parquet format. The UI layer is easier to run with CSV files and a manifest that tells it which generated datasets exist.
+
+
+Step 2: Validate Generation Mode
+================================
+
+Implemented in:
+
+    src/pipeline/rf_augmentation/rf_data_generator_pipeline.py
+
+Allowed feature sampling modes:
+
+    within-group-interpolation
+    sensor-augmented
+
+The script runs both.
+
+The pipeline builds an output suffix:
+
+    within_group_interpolation_raw
+
+or:
+
+    sensor_augmented_raw
+
+For the sensor-augmented branch, the final internal suffix becomes:
+
+    sensor_augmented_noise__time_wrapping__scaling__jittering
+
+because the branch applies all base sensor augmentation methods internally.
+
+
+Step 3: Validate Sensor Mode
+============================
+
+RFDataGeneratorPipeline currently supports only:
+
+    sensor_augmentation_mode = "raw"
+
+If anything else is passed, it raises an error.
+
+Business logic:
+
+This generator expects to start from the original cleaned sensor data. When it needs sensor augmentation, it performs that augmentation inside the "sensor-augmented" generation branch.
+
+
+Step 4: Load Input Data
+=======================
+
+The generator loads:
+
+    data/processed/machine_and_movement.csv
+    data/processed/bending.csv
+    data/processed/geometry.csv
+    data/raw/unique_bending_setups.csv
+
+Business meaning:
+
+- machine_and_movement.csv contains original machine time-series signals.
+- bending.csv contains setup parameters per experiment.
+- geometry.csv contains measured real final geometry.
+- unique_bending_setups.csv defines groups of experiments that share the same or similar bending setup.
+
+The group file has an Experiment_Number column that can contain values like:
+
+    [1, 2, 3]
+    [55]
+    55
+
+The helper _parse_experiment_ids converts these into clean integer lists.
+
+
+Step 5: Load Bending Feature Priority
+=====================================
+
+The generator reads:
+
+    src/pipeline/rf_augmentation/result/bending_feature_rank_mean_axis.csv
+
+This file was produced by:
+
+    2_1_2_run_data_rf_bending_feature_ranker.py
+
+Business logic:
+
+The generator uses bending-feature importance to find reference groups for sparse groups.
+
+Sparse group means:
+
+    a bending setup group with only 1 or 2 real experiments
+
+For sparse groups, the group itself may not contain enough variation to interpolate useful synthetic features. So the generator can borrow a nearby reference group.
+
+Nearby means:
+
+    close in bending setup space, weighted by bending feature importance
+
+Less important bending features have less impact on the distance. More important bending features have more impact.
+
+
+Step 6: Load Trained RF Models
+==============================
+
+Because:
+
+    include_all_features = False
+
+the generator loads ranked-feature models:
+
+    src/pipeline/rf_augmentation/model/rf_main_rf_best_model_ranked_features_raw.pkl
+    src/pipeline/rf_augmentation/model/rf_secondary_rf_best_model_ranked_features_raw.pkl
+
+Business logic:
+
+These models were trained earlier by:
+
+    2_1_3_run_data_rf_augmentator.py
+
+The generator does not train new models. It uses existing trained models to predict geometry for synthetic feature vectors.
+
+The two models predict:
+
+    model_main      -> Main-axis [mm] geometry profile
+    model_secondary -> Secondary-axis [mm] geometry profile
+
+
+Step 7: Load Selected Feature Types
+===================================
+
+Because:
+
+    include_all_features = False
+
+the generator reads:
+
+    src/pipeline/rf_augmentation/result/greedy_search_results.csv
+
+It selects:
+
+    main_top_features
+    secondary_top_features
+
+Business logic:
+
+The main-axis and secondary-axis RF models may have been trained with different feature-type subsets.
+
+So when generating new features, the generator must rebuild the input feature matrices exactly the same way the trained models expect.
+
+If the trained model used only skew features for main-axis prediction, the generator must also provide only those main-axis features.
+
+
+Step 8: Preprocess Machine and Bending Data
+===========================================
+
+The generator calls:
+
+    RFPreprocessor.preprocess_data(
+        machine_movement_df=machine_movement,
+        bending_df=bending,
+    )
+
+Business logic:
+
+This applies the same cleaning rules used during model training:
+
+- remove constant machine signals
+- remove known redundant machine signals
+- remove noisy/unnecessary machine signals
+- remove constant bending setup descriptors
+
+This is critical because generated feature vectors must match the feature space used when training the RF models.
+
+
+Step 9: Build All-Experiment Feature Matrix
+===========================================
+
+The generator calls:
+
+    RFDatasetBuilder.build(...)
+
+on the full cleaned dataset.
+
+It returns:
+
+    X_main_all
+    X_sec_all
+    aligned_ids_all
+
+Business logic:
+
+This all-experiment matrix is used as a reference pool for sparse groups.
+
+If a group has only one or two experiments, interpolation inside that group may be weak. The generator can look at nearby reference groups and use their feature ranges to create better synthetic samples.
+
+
+Mode A: Within-Group Interpolation
+==================================
+
+This branch runs when:
+
+    feature_sampling_mode = "within-group-interpolation"
+
+Business goal:
+
+Create synthetic feature vectors by interpolating between real experiments within the same bending setup group. Then use RF models to predict the geometry for those synthetic feature vectors.
+
+
+Step A1: Loop Through Bending Setup Groups
+------------------------------------------
+
+For each row in:
+
+    data/raw/unique_bending_setups.csv
+
+the pipeline extracts the experiment IDs for that group.
+
+Then it filters:
+
+    machine_group
+    bending_group
+    geometry_group
+
+Business logic:
+
+Generation happens group by group, because the goal is to make each bending setup group have enough samples.
+
+
+Step A2: Build Group-Level Dataset
+----------------------------------
+
+For the current group, the generator builds:
+
+    X_main
+    X_secc
+    Y_main
+    Y_sec
+    feature_names_main
+    feature_names_secondary
+    aligned_ids
+
+Business meaning:
+
+- X_main is the main-axis model input for real experiments in the group.
+- X_secc is the secondary-axis model input for real experiments in the group.
+- Y_main and Y_sec are the real measured geometry profiles.
+- aligned_ids are the experiment IDs that survived feature/geometry alignment.
+
+
+Step A3: Calculate Deficit
+--------------------------
+
+The code computes:
+
+    n_existing = X_main.shape[0]
+    deficit = n_new_samples - n_existing
+
+Current configuration:
+
+    n_new_samples = 6
+
+Business logic:
+
+If a group already has 6 or more experiments, no synthetic samples are generated for that group.
+
+If a group has fewer than 6 experiments, the generator creates only the missing number.
+
+Examples:
+
+    group has 1 real sample -> generate 5 synthetic samples
+    group has 2 real samples -> generate 4 synthetic samples
+    group has 5 real samples -> generate 1 synthetic sample
+    group has 6 real samples -> generate 0 synthetic samples
+
+
+Step A4: Handle Sparse Groups
+-----------------------------
+
+If:
+
+    n_existing <= 2
+
+the generator tries to find a sparse reference group using:
+
+    _find_sparse_reference_group(...)
+
+Business logic:
+
+A group with one sample cannot interpolate within itself.
+
+A group with two samples has very limited variation.
+
+So the generator finds nearby groups in bending-setup space. The distance uses ranked bending features and their importance values.
+
+This gives a reference pool for interpolation.
+
+If no suitable reference group is found:
+
+- for one-sample groups, the fallback is to use all other aligned experiments as a broad reference pool
+- for two-sample groups, it can still interpolate between the two available samples
+
+
+Step A5: Select Synthetic Feature Values
+----------------------------------------
+
+Synthetic feature selection is implemented in:
+
+    src/pipeline/rf_augmentation/rf_augmentation_generator.py
+    src/pipeline/rf_augmentation/rf_group_feature_selector.py
+
+The generator calls:
+
+    RFAugmentationGenerator.generate(...)
+
+This calls:
+
+    RFGroupFeatureSelector.interpolate_within_group(...)
+
+Core interpolation formula:
+
+    synthetic_feature = (1 - alpha) * base_feature + alpha * paired_feature
+
+For normal groups:
+
+    alpha is sampled between 0.35 and 0.95
+
+For sparse groups using a reference pool:
+
+    alpha is sampled between 0.20 and 0.75
+
+Business logic:
+
+The synthetic feature row should stay between realistic observed feature values, not randomly jump outside the observed process space.
+
+The selector also tries to choose diverse pairs, not only the nearest neighbor, so synthetic rows are not almost duplicates.
+
+
+Step A6: Predict Synthetic Geometry
+-----------------------------------
+
+After synthetic feature vectors are created:
+
+    y_main_new = model_main.predict(X_main_new)
+    y_sec_new = model_secondary.predict(X_secondary_new)
+
+Business logic:
+
+The trained Random Forest models translate synthetic process-feature rows into predicted final geometry profiles.
+
+The generator does not invent geometry directly. It invents plausible input features, then lets the trained model predict geometry.
+
+
+Step A7: Combine Real and Synthetic Geometry
+--------------------------------------------
+
+The generator combines:
+
+    Y_main real measured geometry
+    y_main_new predicted synthetic geometry
+
+and:
+
+    Y_sec real measured geometry
+    y_sec_new predicted synthetic geometry
+
+Business logic:
+
+The output for each group contains both:
+
+- original real geometry rows
+- new synthetic geometry rows
+
+This gives a final group-level dataset with up to n_new_samples experiments.
+
+
+Step A8: Rebuild Geometry Table
+-------------------------------
+
+Implemented in:
+
+    src/pipeline/rf_augmentation/geometry_rebuilder.py
+
+The RF model output is wide:
+
+    y_main shape = (n_experiments, n_points)
+    y_sec shape  = (n_experiments, n_points)
+
+The UI and original data format are long:
+
+    one row per experiment per angle/distance point
+
+GeometryRebuilder converts the wide arrays into rows with:
+
+    Experiment_ID
+    Angle[degree]ORDistance[mm]
+    Secondary-axis [mm]
+    Main-axis [mm]
+    Synthetic
+
+Important implementation detail:
+
+The generator sets:
+
+    angle_values = np.arange(n_points)
+
+So the generated output uses point indices:
+
+    0, 1, 2, ...
+
+not necessarily the original physical angle values.
+
+
+Step A9: Add Metadata Columns
+-----------------------------
+
+The generator adds metadata such as:
+
+    group_id
+    source_experiment_ids
+    n_real_group_samples
+    n_synthetic_group_samples
+    target_group_samples
+    feature_value_mode
+    feature_sampling_mode
+    feature_training_mode
+    sensor_augmentation_mode
+    sensor_mode_suffix
+    sample_alpha_min
+    sample_alpha_max
+    sparse_reference_group_id
+    sparse_reference_experiment_ids
+
+Business logic:
+
+These columns make every generated row traceable.
+
+You can tell:
+
+- which group it belongs to
+- how many real samples were available
+- whether it is synthetic
+- which method generated it
+- whether sparse reference groups were used
+
+
+Step A10: Save Within-Group Output
+----------------------------------
+
+The within-group branch saves:
+
+    data/rf_augmented/final_geometry_within_group_interpolation_raw.parquet
+
+It also saves feature selection traces:
+
+    data/rf_augmented/signal_feature_selected_values_within_group_interpolation_raw.parquet
+
+Business logic:
+
+The final geometry file is the generated augmented dataset.
+
+The selected-values file explains how each synthetic feature value was chosen.
+
+
+Mode B: Sensor-Augmented Generation
+===================================
+
+This branch runs when:
+
+    feature_sampling_mode = "sensor-augmented"
+
+Business goal:
+
+Instead of directly interpolating feature vectors, this mode first modifies the raw sensor signals, rebuilds RF features from those modified signals, and predicts new geometry from the resulting feature vectors.
+
+
+Step B1: Use All Sensor Augmentation Methods
+--------------------------------------------
+
+Inside this branch, the code calls:
+
+    RFDataGeneratorPipeline._non_raw_sensor_augmentation_modes()
+
+This returns:
+
+    SensorDataAugmentor.ALL_METHODS_MODE
+
+which is:
+
+    noise+time-wrapping+scaling+jittering
+
+So even though the outer sensor mode is "raw", the sensor-augmented generation branch internally uses:
+
+    noise
+    time-wrapping
+    scaling
+    jittering
+
+
+Step B2: Loop Through Groups
+----------------------------
+
+Just like within-group interpolation, this branch loops through every bending setup group and filters:
+
+    machine_group
+    bending_group
+    geometry_group
+
+
+Step B3: Build Sensor Reference Range
+-------------------------------------
+
+For normal groups, sensor augmentation ranges are calculated from the group itself.
+
+For sparse groups with 1 or 2 real samples, the code may find nearby reference groups using:
+
+    _find_sparse_reference_group(...)
+
+Business logic:
+
+If a group is sparse, its sensor range may be too narrow or unrepresentative. Nearby bending setup groups provide a better range for noise, scaling, time warping, and jittering.
+
+
+Step B4: Create Augmented Sensor Variants
+-----------------------------------------
+
+For sparse groups:
+
+    n_sensor_variants = max(1, n_new_samples - n_real_group_samples)
+
+For non-sparse groups:
+
+    n_sensor_variants = 1
+
+The code applies:
+
+    SensorDataAugmentor.apply_all_methods_from_group_ranges(...)
+
+or:
+
+    SensorDataAugmentor.apply_all_methods_from_reference_ranges(...)
+
+Business logic:
+
+This creates modified machine signal curves that remain within realistic group or reference ranges.
+
+For multiple variants, the code changes Experiment_ID:
+
+    new Experiment_ID = old Experiment_ID * 1000 + variant_idx + 1
+
+This prevents duplicate experiment IDs in the augmented sensor dataset.
+
+
+Step B5: Rebuild Features From Augmented Sensors
+------------------------------------------------
+
+The pipeline builds RF features twice:
+
+1. From the original group sensor data.
+2. From the augmented sensor data.
+
+Business logic:
+
+The synthetic geometry should be based on modified sensor behavior, not direct random edits to the already-computed feature matrix.
+
+So the code modifies the time-series signals first, then recomputes the model input features.
+
+
+Step B6: Predict Geometry From Augmented Features
+-------------------------------------------------
+
+If the group needs synthetic samples:
+
+    deficit = n_new_samples - n_existing
+
+the code samples augmented feature candidates and predicts:
+
+    y_main_new = model_main.predict(X_main_selected)
+    y_sec_new = model_secondary.predict(X_sec_selected)
+
+Then it combines real measured geometry with predicted synthetic geometry.
+
+
+Step B7: Save Sensor-Augmented Output
+-------------------------------------
+
+The sensor-augmented branch saves:
+
+    data/rf_augmented/final_geometry_sensor_augmented_noise__time_wrapping__scaling__jittering.parquet
+
+It also saves:
+
+    data/rf_augmented/signal_feature_selected_values_sensor_augmented_noise__time_wrapping__scaling__jittering.parquet
+
+and augmented sensor data:
+
+    data/rf_augmented/sensor_data/machine_movement_noise__time_wrapping__scaling__jittering.parquet
+
+Business logic:
+
+This preserves not only the predicted geometry, but also the modified sensor data and the selected feature values used to create the synthetic predictions.
+
+
+Step 10: Record Feature-Selection Details
+=========================================
+
+Implemented in:
+
+    src/pipeline/rf_augmentation/rf_signal_selection_recorder.py
+
+For every synthetic sample and every model input feature, the recorder stores:
+
+    group_id
+    source_experiment_ids
+    synthetic_experiment_id
+    base_experiment_id
+    paired_base_experiment_id
+    interpolation_weight
+    model_input
+    input_source
+    signal_name
+    feature_type
+    feature_name
+    actual_value
+    paired_actual_value
+    selected_value
+    group_min_value
+    group_max_value
+    selection_method
+    feature_sampling_mode
+    alpha_min
+    alpha_max
+    sparse_reference_group_id
+
+Business logic:
+
+This file is an audit trail.
+
+It lets you inspect exactly how synthetic feature rows were constructed and which real experiments they came from.
+
+
+Step 11: Export Streamlit UI Data
+=================================
+
+After both generation modes finish, the script calls:
+
+    export_streamlit_ui_data(...)
+
+This function expects generated geometry files:
+
+    data/rf_augmented/final_geometry_within_group_interpolation_raw.parquet
+    data/rf_augmented/final_geometry_sensor_augmented_noise__time_wrapping__scaling__jittering.parquet
+
+It converts them to:
+
+    data/rf_augmented/ui_data/final_geometry_within_group_interpolation_raw.csv
+    data/rf_augmented/ui_data/final_geometry_sensor_augmented_noise__time_wrapping__scaling__jittering.csv
+
+It also copies:
+
+    data/raw/unique_bending_setups.csv
+
+to:
+
+    data/rf_augmented/ui_data/unique_bending_setups.csv
+
+Then it writes:
+
+    data/rf_augmented/ui_data/manifest.json
+
+Business logic:
+
+The UI needs a simple manifest that tells it:
+
+- which generation methods exist
+- what title to display for each method
+- which CSV file belongs to each method
+- which group setup CSV to use
+
+
+Current Workspace Note
+======================
+
+In the current workspace, these UI CSV files exist:
+
+    data/rf_augmented/ui_data/final_geometry_within_group_interpolation_raw.csv
+    data/rf_augmented/ui_data/final_geometry_sensor_augmented_noise__time_wrapping__scaling__jittering.csv
+    data/rf_augmented/ui_data/manifest.json
+    data/rf_augmented/ui_data/unique_bending_setups.csv
+
+However, the top-level generated parquet files were not visible at the time this explanation was generated.
+
+The script's export function expects the parquet or CSV source files under:
+
+    data/rf_augmented/final_geometry_within_group_interpolation_raw.parquet
+    data/rf_augmented/final_geometry_sensor_augmented_noise__time_wrapping__scaling__jittering.parquet
+
+If those files are missing and the export step is run without regenerating them first, export_streamlit_ui_data will raise FileNotFoundError.
+
+
+Important Interpretation
+========================
+
+This pipeline creates synthetic geometry predictions, not new physical measurements.
+
+A synthetic row means:
+
+    the trained Random Forest predicted geometry for a synthetic or modified process-feature input
+
+It does not mean:
+
+    this geometry was physically measured in the lab
+
+The generated data is useful for:
+
+- UI visualization
+- exploring model behavior
+- balancing sparse groups
+- creating candidate geometry profiles
+- comparing augmentation strategies
+
+It should be interpreted as model-generated geometry, not experimental ground truth.
+
+
+Main Difference From Earlier Scripts
+====================================
+
+2_1_1_run_data_rf_feature_ranker.py:
+
+    Finds useful machine feature types.
+
+2_1_2_run_data_rf_bending_feature_ranker.py:
+
+    Ranks bending setup parameters.
+
+2_1_3_run_data_rf_augmentator.py:
+
+    Trains and evaluates final RF models.
+
+2_1_4_run_data_augmented_generator.py:
+
+    Uses those trained RF models to generate augmented geometry data.
+
+
+Flowchart
+=========
+
+    Start: run 2_1_4 script
+        |
+        v
+    Set generation configuration
+        |
+        +--> output_dir = data/rf_augmented
+        +--> n_new_samples = 6
+        +--> generation_modes = within-group-interpolation, sensor-augmented
+        +--> include_all_features = False
+        +--> sensor_augmentation_modes = ["raw"]
+        |
+        v
+    Loop over sensor mode and generation mode
+        |
+        +-------------------------------+
+        |                               |
+        v                               v
+    within-group-interpolation      sensor-augmented
+        |                               |
+        +---------------+---------------+
+                        |
+                        v
+              Run RFDataGeneratorPipeline
+                        |
+                        v
+              Validate mode and build suffix
+                        |
+                        v
+              Load input data
+                        |
+        +---------------+---------------+---------------+
+        |               |               |               |
+        v               v               v               v
+    machine_and_     bending.csv     geometry.csv    unique_bending_
+    movement.csv                                      setups.csv
+                        |
+                        v
+              Load bending feature rank order
+                        |
+                        v
+              Load trained RF models
+                        |
+        +---------------+---------------+
+        |                               |
+        v                               v
+    main-axis RF model             secondary-axis RF model
+                        |
+                        v
+              Load greedy feature subsets
+                        |
+                        v
+              Preprocess machine and bending data
+                        |
+                        v
+              Build all-experiment RF feature matrix
+                        |
+                        v
+              Loop through bending setup groups
+                        |
+                        v
+              Parse group experiment IDs
+                        |
+                        v
+              Filter machine, bending, geometry for group
+                        |
+                        v
+              Build group-level RF dataset
+                        |
+                        v
+              Count existing real samples
+                        |
+                        v
+              deficit = n_new_samples - n_existing
+                        |
+        +---------------+---------------+
+        |                               |
+        v                               v
+    deficit <= 0                    deficit > 0
+        |                               |
+        v                               v
+    keep real geometry              generate missing synthetic samples
+                                        |
+                                        v
+                            If sparse group, find reference group
+                                        |
+                         +--------------+--------------+
+                         |                             |
+                         v                             v
+              Within-group mode              Sensor-augmented mode
+                         |                             |
+                         v                             v
+              Interpolate feature rows       Modify sensor signals using
+              between base and paired        noise, time-wrapping,
+              experiments                    scaling, jittering
+                         |                             |
+                         v                             v
+              Predict synthetic geometry     Rebuild features from
+              with RF models                 augmented sensors
+                         |                             |
+                         v                             v
+              Combine real + synthetic       Predict synthetic geometry
+              geometry                       with RF models
+                         |                             |
+                         +--------------+--------------+
+                                        |
+                                        v
+                              Rebuild geometry table
+                                        |
+                                        v
+                              Add metadata columns
+                                        |
+                                        v
+                              Record selected feature values
+                                        |
+                                        v
+                              Append group result
+                                        |
+                                        v
+                              Concatenate all group results
+                                        |
+                                        v
+                              Save generated geometry parquet
+                                        |
+                                        v
+                              Save selection trace parquet
+                                        |
+                                        v
+                    After both generation modes finish
+                                        |
+                                        v
+                              Export Streamlit UI CSVs
+                                        |
+                                        v
+                              Write manifest.json
+                                        |
+                                        v
+                                      End

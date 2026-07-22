@@ -1,5 +1,11 @@
+import sys
 from pathlib import Path
+
+project_root = Path(__file__).resolve().parent
+sys.path.insert(0, str(project_root / "src"))
+
 import json
+import ast
 
 import joblib
 import matplotlib.pyplot as plt
@@ -8,11 +14,11 @@ import pandas as pd
 import streamlit as st
 from matplotlib.lines import Line2D
 
-from pipeline.ml.qrf.mode.experiments.data_splittor import DataSplittor
-from pipeline.ml.qrf.mode.experiments.geometry_data_preprocessor import GeometryPreprocessor
-from pipeline.ml.qrf.mode.experiments.qrf_pipeline import qrf_training_geometry_sources
-from src.pipeline.rf_augmentation.io_utils import read_table
-
+from pipeline.ml.qrf.mode.experiments.geometry_data_preprocessor import (
+    load_bending_setups,
+    load_geometry_data,
+    read_table,
+)
 
 st.set_page_config(
     page_title="QRF Visualization",
@@ -22,8 +28,41 @@ st.set_page_config(
 st.title("QRF Prediction Interval Visualization")
 
 project_root = Path(__file__).resolve().parent
-result_dir = project_root / "src" / "pipeline" / "ml" / "qrf" / "result"
-model_dir = project_root / "src" / "pipeline" / "ml" / "model"
+result_dir = (
+    project_root
+    / "src"
+    / "pipeline"
+    / "ml"
+    / "qrf"
+    / "result"
+)
+
+model_dir = result_dir / "models"
+
+split_metadata_path = (
+    project_root
+    / "src"
+    / "pipeline"
+    / "ml"
+    / "qrf"
+    / "data"
+    / "various_splits.parquet"
+)
+
+QRF_RANKING_SOURCE = (
+    "sensor_augmented_noise__time_wrapping__scaling__jittering"
+)
+
+QRF_EXCLUDED_EXPERIMENTS = [
+    1,
+    48,
+    166,
+]
+
+TARGETS_BY_AXIS = {
+    "main": "Main-axis [mm]",
+    "secondary": "Secondary-axis [mm]",
+}
 
 DATASET_LABELS = {
     "real": "Real geometry",
@@ -45,62 +84,232 @@ def format_group(group_id) -> str:
     return f"Group {int(group_id)}"
 
 
+def qrf_training_geometry_sources(project_root: Path) -> dict[str, Path]:
+    return {
+        "real": (
+            project_root
+            / "data"
+            / "processed"
+            / "geometry.csv"
+        ),
+        "sensor_augmented_noise__time_wrapping__scaling__jittering": (
+            project_root
+            / "data"
+            / "rf_augmented"
+            / "ui_data"
+            / (
+                "final_geometry_sensor_augmented_noise__"
+                "time_wrapping__scaling__jittering.csv"
+            )
+        ),
+        "within_group_interpolation_raw": (
+            project_root
+            / "data"
+            / "rf_augmented"
+            / "ui_data"
+            / (
+                "final_geometry_within_group_"
+                "interpolation_raw.csv"
+            )
+        ),
+    }
+
+
 @st.cache_data
 def load_csv(path, file_mtime):
     return pd.read_csv(path)
 
 
+def decode_experiment_ids(value: object) -> list[int]:
+    if isinstance(value, str):
+        value = ast.literal_eval(value)
+
+    if isinstance(value, np.ndarray):
+        value = value.tolist()
+
+    if not isinstance(value, (list, tuple, set)):
+        raise TypeError(
+            "Experiment IDs must be list-like, "
+            f"received {type(value).__name__}."
+        )
+
+    return sorted({int(item) for item in value})
+
+
 @st.cache_data
-def load_split_metadata(geometry_path: str, geometry_mtime: float):
-    geometry_path = Path(geometry_path)
-    geometry_df = read_table(geometry_path)
-    bending_df = pd.read_csv(
-        project_root / "data" / "processed" / "processed_bending_setup.csv"
+def load_preprocessed_geometry(
+    geometry_path: str,
+    geometry_mtime: float,
+) -> pd.DataFrame:
+    del geometry_mtime
+
+    bending_df = load_bending_setups(
+        path=(
+            project_root
+            / "data"
+            / "rf_augmented"
+            / "ui_data"
+            / "unique_bending_setups.csv"
+        ),
+        excluded_experiments=QRF_EXCLUDED_EXPERIMENTS,
     )
-    geometry_clean = GeometryPreprocessor.preprocess(
-        geometry_df=geometry_df,
-        bending_df=bending_df,
+
+    geometry_clean = load_geometry_data(
+        path=Path(geometry_path),
+        bending_setups_df=bending_df,
+        excluded_experiments=QRF_EXCLUDED_EXPERIMENTS,
     )
-    train_df, test_df = DataSplittor.splittor(
-        geometry_df=geometry_clean,
-        unique_bending_df=bending_df,
-        test_size=0.2,
-        random_state=42,
-    )
-    return train_df.reset_index(drop=True), test_df.reset_index(drop=True)
+
+    return geometry_clean.reset_index(drop=True)
 
 
-def attach_test_metadata(prediction_df: pd.DataFrame, test_df: pd.DataFrame) -> pd.DataFrame:
+@st.cache_data
+def load_best_splits_by_target(
+    metadata_path: str,
+    metadata_mtime: float,
+    ranking_source: str,
+) -> dict[str, dict]:
+    del metadata_mtime
+
+    split_df = pd.read_parquet(metadata_path)
+
+    required_columns = {
+        "split_index",
+        "geometry_source",
+        "train_experiment_ids",
+        "test_experiment_ids",
+        "qrf_rank_main",
+        "qrf_rank_secondary",
+    }
+
+    missing_columns = required_columns.difference(split_df.columns)
+
+    if missing_columns:
+        raise KeyError(
+            "Split metadata is missing columns: "
+            f"{sorted(missing_columns)}"
+        )
+
+    source_df = split_df[
+        split_df["geometry_source"]
+        .astype(str)
+        .eq(ranking_source)
+    ].copy()
+
+    if source_df.empty:
+        available_sources = sorted(
+            split_df["geometry_source"]
+            .dropna()
+            .astype(str)
+            .unique()
+            .tolist()
+        )
+
+        raise ValueError(
+            f"No split data found for {ranking_source!r}. "
+            f"Available sources: {available_sources}"
+        )
+
+    split_catalog = source_df.drop_duplicates(
+        subset=["split_index"]
+    ).copy()
+
+    target_rank_columns = {
+        "Main-axis [mm]": "qrf_rank_main",
+        "Secondary-axis [mm]": "qrf_rank_secondary",
+    }
+
+    selected = {}
+
+    for target_name, rank_column in target_rank_columns.items():
+        ranked_df = split_catalog.dropna(
+            subset=[rank_column]
+        ).copy()
+
+        ranked_df[rank_column] = pd.to_numeric(
+            ranked_df[rank_column],
+            errors="raise",
+        ).astype(int)
+
+        top_df = ranked_df[
+            ranked_df[rank_column].eq(1)
+        ].drop_duplicates(subset=["split_index"])
+
+        if len(top_df) != 1:
+            raise ValueError(
+                f"Expected one Top-1 split for {target_name}, "
+                f"but found {len(top_df)}."
+            )
+
+        row = top_df.iloc[0]
+
+        selected[target_name] = {
+            "split_index": int(row["split_index"]),
+            "train_experiment_ids": decode_experiment_ids(
+                row["train_experiment_ids"]
+            ),
+            "test_experiment_ids": decode_experiment_ids(
+                row["test_experiment_ids"]
+            ),
+        }
+
+    return selected
+
+
+def attach_test_metadata(
+    prediction_df: pd.DataFrame,
+    geometry_df: pd.DataFrame,
+    splits_by_target: dict[str, dict],
+) -> pd.DataFrame:
     prediction_df = prediction_df.copy().reset_index(drop=True)
-    metadata_cols = [
-        "Group_ID",
-        "Experiment_ID",
-        "Angle[degree]ORDistance[mm]",
-    ]
-    metadata = test_df[metadata_cols].reset_index(drop=True)
 
     enriched_targets = []
-    for target_name, target_predictions in prediction_df.groupby("target", sort=False):
+
+    for target_name, target_predictions in prediction_df.groupby(
+        "target",
+        sort=False,
+    ):
         target_predictions = target_predictions.reset_index(drop=True)
-        if len(target_predictions) != len(metadata):
+
+        split_config = splits_by_target.get(target_name)
+
+        if split_config is None:
             st.warning(
-                f"Cannot attach group metadata for `{target_name}` because "
-                f"prediction rows ({len(target_predictions)}) do not match "
-                f"test rows ({len(metadata)})."
+                f"No split configuration exists for `{target_name}`."
             )
-            target_predictions["Group_ID"] = np.nan
-            target_predictions["Experiment_ID"] = np.nan
+            continue
+
+        target_test_df = geometry_df[
+            geometry_df["Experiment_ID"].isin(
+                split_config["test_experiment_ids"]
+            )
+        ].copy()
+
+        target_test_df = target_test_df.reset_index(drop=True)
+
+        if len(target_predictions) != len(target_test_df):
+            st.warning(
+                f"Cannot attach metadata for `{target_name}`: "
+                f"{len(target_predictions)} prediction rows versus "
+                f"{len(target_test_df)} test rows."
+            )
+
+            target_predictions["Group_ID"] = pd.NA
+            target_predictions["Experiment_ID"] = pd.NA
             enriched_targets.append(target_predictions)
             continue
 
-        enriched = pd.concat(
-            [
-                target_predictions,
-                metadata[["Group_ID", "Experiment_ID"]],
-            ],
-            axis=1,
+        target_predictions["Group_ID"] = (
+            target_test_df["Group_ID"].to_numpy()
         )
-        enriched_targets.append(enriched)
+        target_predictions["Experiment_ID"] = (
+            target_test_df["Experiment_ID"].to_numpy()
+        )
+
+        enriched_targets.append(target_predictions)
+
+    if not enriched_targets:
+        return pd.DataFrame()
 
     return pd.concat(enriched_targets, ignore_index=True)
 
@@ -139,56 +348,213 @@ def compute_metrics(df: pd.DataFrame) -> dict[str, float]:
     }
 
 
-@st.cache_resource
-def load_qrf_models(geometry_source: str, main_mtime: float, secondary_mtime: float):
-    paper_name = f"qrf_geometry_{geometry_source}"
-    main_model = joblib.load(model_dir / f"qrf_main_axis_{paper_name}.pkl")
-    secondary_model = joblib.load(model_dir / f"qrf_secondary_axis_{paper_name}.pkl")
-    return main_model, secondary_model
+def target_axis(target_name: str) -> str:
+    for axis, configured_target in TARGETS_BY_AXIS.items():
+        if configured_target == target_name:
+            return axis
+
+    raise KeyError(f"Unknown QRF target: {target_name!r}")
+
+
+def find_qrf_artifact_dir(
+    geometry_source: str,
+    axis: str,
+    split_index: int,
+) -> Path:
+    axis_dir = model_dir / geometry_source / axis
+
+    if not axis_dir.exists():
+        raise FileNotFoundError(
+            f"Missing QRF artifact directory: {axis_dir}"
+        )
+
+    candidates = []
+
+    for metadata_path in axis_dir.glob("*/metadata.json"):
+        with metadata_path.open("r", encoding="utf-8") as file:
+            metadata = json.load(file)
+
+        if int(metadata.get("split_index", -1)) == int(split_index):
+            candidates.append(
+                (
+                    metadata_path.parent.stat().st_mtime,
+                    metadata_path.parent,
+                )
+            )
+
+    if not candidates:
+        raise FileNotFoundError(
+            "No QRF artifact found for "
+            f"source={geometry_source!r}, axis={axis!r}, "
+            f"split_index={split_index}."
+        )
+
+    return max(candidates, key=lambda item: item[0])[1]
 
 
 @st.cache_data
-def load_qrf_feature_columns(config_path: str, config_mtime: float) -> list[str]:
-    with open(config_path) as config_file:
-        config = json.load(config_file)
-    return config["feature_columns"]
+def load_qrf_metadata(metadata_path: str, metadata_mtime: float) -> dict:
+    del metadata_mtime
+
+    with Path(metadata_path).open("r", encoding="utf-8") as file:
+        return json.load(file)
 
 
-def predict_split_group(split_df: pd.DataFrame, geometry_source: str) -> pd.DataFrame:
-    paper_name = f"qrf_geometry_{geometry_source}"
-    main_model_path = model_dir / f"qrf_main_axis_{paper_name}.pkl"
-    secondary_model_path = model_dir / f"qrf_secondary_axis_{paper_name}.pkl"
-    config_path = model_dir / f"qrf_config_{paper_name}.json"
+@st.cache_resource
+def load_qrf_model(model_path: str, model_mtime: float):
+    del model_mtime
 
-    if not main_model_path.exists() or not secondary_model_path.exists():
-        st.warning(f"Missing saved QRF models for `{geometry_source}`.")
-        st.stop()
+    return joblib.load(model_path)
 
-    if not config_path.exists():
-        st.warning(f"Missing saved QRF config for `{geometry_source}`.")
-        st.stop()
 
-    main_model, secondary_model = load_qrf_models(
-        geometry_source,
-        main_model_path.stat().st_mtime,
-        secondary_model_path.stat().st_mtime,
+@st.cache_data
+def load_qrf_test_predictions(
+    predictions_path: str,
+    predictions_mtime: float,
+) -> pd.DataFrame:
+    del predictions_mtime
+
+    return read_table(Path(predictions_path))
+
+
+def load_qrf_artifact(
+    geometry_source: str,
+    axis: str,
+    split_index: int,
+) -> dict:
+    artifact_dir = find_qrf_artifact_dir(
+        geometry_source=geometry_source,
+        axis=axis,
+        split_index=split_index,
     )
-    feature_columns = load_qrf_feature_columns(
-        str(config_path),
-        config_path.stat().st_mtime,
+
+    metadata_path = artifact_dir / "metadata.json"
+    model_path = artifact_dir / "qrf_model.joblib"
+
+    if not model_path.exists():
+        raise FileNotFoundError(
+            f"Missing QRF model artifact: {model_path}"
+        )
+
+    metadata = load_qrf_metadata(
+        str(metadata_path),
+        metadata_path.stat().st_mtime,
     )
 
+    model = load_qrf_model(
+        str(model_path),
+        model_path.stat().st_mtime,
+    )
+
+    return {
+        "artifact_dir": artifact_dir,
+        "metadata": metadata,
+        "model": model,
+    }
+
+
+def format_prediction_frame(
+    prediction_df: pd.DataFrame,
+    target_name: str,
+) -> pd.DataFrame:
     angle_col = "Angle[degree]ORDistance[mm]"
-    X = split_df[feature_columns]
 
-    def predict_target(model, target_col: str, target_name: str) -> pd.DataFrame:
+    return pd.DataFrame(
+        {
+            "angle": prediction_df[angle_col].to_numpy(),
+            "y_true": prediction_df["y_true"].to_numpy(),
+            "y_pred_mean": prediction_df["y_median"].to_numpy(),
+            "y_pred_lower": prediction_df["y_lower"].to_numpy(),
+            "y_pred_upper": prediction_df["y_upper"].to_numpy(),
+            "target": target_name,
+            "Group_ID": prediction_df["Group_ID"].to_numpy(),
+            "Experiment_ID": prediction_df["Experiment_ID"].to_numpy(),
+        }
+    )
+
+
+def load_test_predictions_from_artifacts(
+    geometry_source: str,
+    splits_by_target: dict[str, dict],
+) -> pd.DataFrame:
+    frames = []
+
+    for target_name, split_config in splits_by_target.items():
+        axis = target_axis(target_name)
+        artifact_dir = find_qrf_artifact_dir(
+            geometry_source=geometry_source,
+            axis=axis,
+            split_index=split_config["split_index"],
+        )
+
+        predictions_path = artifact_dir / "test_predictions.parquet"
+
+        if not predictions_path.exists():
+            predictions_path = artifact_dir / "test_predictions.csv"
+
+        if not predictions_path.exists():
+            raise FileNotFoundError(
+                "Missing QRF test predictions in artifact: "
+                f"{artifact_dir}"
+            )
+
+        raw_predictions = load_qrf_test_predictions(
+            str(predictions_path),
+            predictions_path.stat().st_mtime,
+        )
+
+        frames.append(
+            format_prediction_frame(
+                prediction_df=raw_predictions,
+                target_name=target_name,
+            )
+        )
+
+    return pd.concat(frames, ignore_index=True)
+
+
+def predict_split_group(
+    split_df: pd.DataFrame,
+    geometry_source: str,
+    splits_by_target: dict[str, dict],
+) -> pd.DataFrame:
+    angle_col = "Angle[degree]ORDistance[mm]"
+
+    def predict_target(
+        split_config: dict,
+        target_col: str,
+        target_name: str,
+    ) -> pd.DataFrame:
+        axis = target_axis(target_name)
+        artifact = load_qrf_artifact(
+            geometry_source=geometry_source,
+            axis=axis,
+            split_index=split_config["split_index"],
+        )
+
+        model = artifact["model"]
+        metadata = artifact["metadata"]
+        feature_columns = metadata["feature_columns"]
+        model_config = metadata.get("model_config", {})
+        lower_quantile = float(
+            model_config.get("lower_quantile", 0.05)
+        )
+        upper_quantile = float(
+            model_config.get("upper_quantile", 0.95)
+        )
+        X = split_df[feature_columns]
+
         return pd.DataFrame(
             {
                 "angle": split_df[angle_col].to_numpy(),
                 "y_true": split_df[target_col].to_numpy(),
                 "y_pred_mean": np.asarray(model.predict(X, quantiles=0.50)).ravel(),
-                "y_pred_lower": np.asarray(model.predict(X, quantiles=0.05)).ravel(),
-                "y_pred_upper": np.asarray(model.predict(X, quantiles=0.95)).ravel(),
+                "y_pred_lower": np.asarray(
+                    model.predict(X, quantiles=lower_quantile)
+                ).ravel(),
+                "y_pred_upper": np.asarray(
+                    model.predict(X, quantiles=upper_quantile)
+                ).ravel(),
                 "target": target_name,
                 "Group_ID": split_df["Group_ID"].to_numpy(),
                 "Experiment_ID": split_df["Experiment_ID"].to_numpy(),
@@ -197,9 +563,13 @@ def predict_split_group(split_df: pd.DataFrame, geometry_source: str) -> pd.Data
 
     return pd.concat(
         [
-            predict_target(main_model, "Main-axis [mm]", "Main-axis [mm]"),
             predict_target(
-                secondary_model,
+                splits_by_target["Main-axis [mm]"],
+                "Main-axis [mm]",
+                "Main-axis [mm]",
+            ),
+            predict_target(
+                splits_by_target["Secondary-axis [mm]"],
                 "Secondary-axis [mm]",
                 "Secondary-axis [mm]",
             ),
@@ -224,22 +594,26 @@ st.sidebar.markdown(
     f"`{geometry_path.relative_to(project_root)}`."
 )
 
-prediction_path = result_dir / f"qrf_prediction_details_{geometry_source}.csv"
-
-if not prediction_path.exists():
-    st.warning(f"Missing QRF prediction file: {prediction_path}")
-    st.stop()
-
 if not geometry_path.exists():
     st.warning(f"Missing geometry source file for `{geometry_source}`.")
     st.stop()
 
-prediction_df = load_csv(prediction_path, prediction_path.stat().st_mtime)
-prediction_df.columns = [c.strip() for c in prediction_df.columns]
+if not split_metadata_path.exists():
+    st.error(
+        f"Stored split metadata was not found: "
+        f"{split_metadata_path}"
+    )
+    st.stop()
 
-train_df, test_df = load_split_metadata(
+geometry_df = load_preprocessed_geometry(
     str(geometry_path),
     geometry_path.stat().st_mtime,
+)
+
+splits_by_target = load_best_splits_by_target(
+    str(split_metadata_path),
+    split_metadata_path.stat().st_mtime,
+    QRF_RANKING_SOURCE,
 )
 
 split_name = st.sidebar.radio(
@@ -254,8 +628,39 @@ plot_mode = st.sidebar.radio(
     horizontal=True,
 )
 
-split_df = test_df if split_name == "test" else train_df
-available_groups = sorted(split_df["Group_ID"].dropna().astype(int).unique().tolist())
+experiment_id_key = (
+    "test_experiment_ids"
+    if split_name == "test"
+    else "train_experiment_ids"
+)
+
+selected_experiment_ids = sorted(
+    {
+        experiment_id
+        for split_config in splits_by_target.values()
+        for experiment_id in split_config[experiment_id_key]
+    }
+)
+
+split_df = geometry_df[
+    geometry_df["Experiment_ID"].isin(
+        selected_experiment_ids
+    )
+].copy()
+
+available_groups = sorted(
+    split_df["Group_ID"]
+    .dropna()
+    .astype(int)
+    .unique()
+    .tolist()
+)
+
+if not available_groups:
+    st.warning(
+        f"No groups found in the `{split_name}` split."
+    )
+    st.stop()
 
 selected_group = st.sidebar.selectbox(
     "Group number",
@@ -272,9 +677,16 @@ selected_split_df = split_df[
 ].copy()
 
 if split_name == "test":
-    prediction_df = attach_test_metadata(prediction_df, test_df)
+    prediction_df = load_test_predictions_from_artifacts(
+        geometry_source=geometry_source,
+        splits_by_target=splits_by_target,
+    )
 else:
-    prediction_df = predict_split_group(selected_split_df, geometry_source)
+    prediction_df = predict_split_group(
+        selected_split_df,
+        geometry_source,
+        splits_by_target,
+    )
 
 prediction_df = prediction_df[
     (prediction_df["Group_ID"].astype("Int64") == int(selected_group))
@@ -382,7 +794,7 @@ class QRFVisualizer:
             y_pred_mean,
             color="#FF8C00",
             linewidth=self.prediction_linewidth,
-            label="Prediction",
+            label="Prediction Median",
         )
 
         if self.plot_mode == "Experiment signals":
@@ -426,7 +838,7 @@ class QRFVisualizer:
                 linewidth=3.2,
                 linestyle="--",
                 alpha=0.95,
-                label="Actual",
+                label="Actual Median",
                 zorder=11,
             )
         else:
@@ -437,7 +849,7 @@ class QRFVisualizer:
                 linewidth=2,
                 linestyle="--",
                 alpha=0.9,
-                label="Actual",
+                label="Actual Median",
             )
             ax.scatter(
                 raw_inside_df["display_angle"],
@@ -474,7 +886,7 @@ class QRFVisualizer:
 
         legend_elements = [
             Line2D([0], [0], color="#4C72B0", lw=10, alpha=0.22, label="Prediction Interval"),
-            Line2D([0], [0], color="#FF8C00", lw=self.prediction_linewidth, label="Prediction"),
+            Line2D([0], [0], color="#FF8C00", lw=self.prediction_linewidth, label="Prediction Median"),
         ]
         if self.plot_mode == "Experiment signals":
             legend_elements.append(
@@ -488,12 +900,12 @@ class QRFVisualizer:
                 )
             )
             legend_elements.append(
-                Line2D([0], [0], color="#025BFF", lw=3.2, linestyle="--", label="Actual")
+                Line2D([0], [0], color="#025BFF", lw=3.2, linestyle="--", label="Actual Median")
             )
         else:
             legend_elements.extend(
                 [
-                    Line2D([0], [0], color="#025BFF", lw=2, linestyle="--", label="Actual"),
+                    Line2D([0], [0], color="#025BFF", lw=2, linestyle="--", label="Actual Median"),
                     Line2D(
                         [0],
                         [0],

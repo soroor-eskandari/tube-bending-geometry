@@ -1,10 +1,9 @@
-experiment_name: qrf_tree_convergence
+experiment_name: qrf_split_ranking
 
 paths:
   bending_setups: data/rf_augmented/ui_data/unique_bending_setups.csv
   split_metadata: src/pipeline/ml/qrf/data/various_splits.parquet
-  geometry_data: data/qrf/geometry/geometry_clean.parquet
-  output_directory: result/runs
+  output_directory: src/pipeline/ml/qrf/result/runs
 
   geometry_sources:
     sensor_augmented: data/rf_augmented/ui_data/final_geometry_sensor_augmented_noise__time_wrapping__scaling__jittering.csv
@@ -13,7 +12,10 @@ paths:
 
 data:
   geometry_source: sensor_augmented
-  excluded_experiments: [1, 48, 166]
+  excluded_experiments:
+    - 1
+    - 48
+    - 166
 
 features:
   input_columns:
@@ -36,9 +38,12 @@ model:
   n_jobs: -1
 
 search:
-  split_indices: [0, 1, 2, 15, 16, 17]
-  n_estimators: [10, 20, 30, 40, 50, 60, 70, 80, 90, 100]
-  axes: [main, secondary]
+  split_indices: []
+  n_estimators:
+    - 300
+  axes:
+    - main
+    - secondary
 
 output:
-  save_predictions: true
+  save_predictions: false

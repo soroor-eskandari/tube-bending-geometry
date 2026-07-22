@@ -88,33 +88,37 @@ REQUIRED_GEOMETRY_COLUMNS = {
     "Secondary-axis [mm]",
 }
 
-
 def attach_group_id(
     geometry_df: pd.DataFrame,
     bending_setups_df: pd.DataFrame,
 ) -> pd.DataFrame:
     """
-    Add Group_ID to geometry rows using Experiment_Number.
+    Add Group_ID to geometry rows by mapping:
 
-    bending_setups_df must contain:
-        Group_ID
-        Experiment_Number
+        geometry_df["Experiment_ID"]
+            ->
+        bending_setups_df["Experiment_Number"]
 
-    Experiment_Number in bending_setups_df may contain a list of experiments.
+    Experiment_Number in bending_setups_df may contain a list.
     """
     if "Group_ID" in geometry_df.columns:
         return geometry_df
 
-    if "Experiment_Number" not in geometry_df.columns:
+    geometry_experiment_column = "Experiment_ID"
+    setup_experiment_column = "Experiment_Number"
+
+    if geometry_experiment_column not in geometry_df.columns:
         raise KeyError(
-            "Geometry data has neither 'Group_ID' nor "
-            "'Experiment_Number', so Group_ID cannot be assigned."
+            "Geometry data is missing the required column "
+            f"{geometry_experiment_column!r}. "
+            f"Available columns: {geometry_df.columns.tolist()}"
         )
 
     required_bending_columns = {
         "Group_ID",
-        "Experiment_Number",
+        setup_experiment_column,
     }
+
     missing = required_bending_columns.difference(
         bending_setups_df.columns
     )
@@ -127,28 +131,43 @@ def attach_group_id(
 
     experiment_group_map = (
         bending_setups_df[
-            ["Group_ID", "Experiment_Number"]
+            [
+                "Group_ID",
+                setup_experiment_column,
+            ]
         ]
-        .explode("Experiment_Number")
-        .dropna(subset=["Experiment_Number"])
+        .explode(setup_experiment_column)
+        .dropna(subset=[setup_experiment_column])
         .copy()
     )
 
-    experiment_group_map["Experiment_Number"] = pd.to_numeric(
-        experiment_group_map["Experiment_Number"],
-        errors="raise",
-    ).astype(int)
+    experiment_group_map[setup_experiment_column] = (
+        pd.to_numeric(
+            experiment_group_map[setup_experiment_column],
+            errors="raise",
+        )
+        .astype(int)
+    )
 
     geometry_df = geometry_df.copy()
 
-    geometry_df["Experiment_Number"] = pd.to_numeric(
-        geometry_df["Experiment_Number"],
-        errors="raise",
-    ).astype(int)
+    geometry_df[geometry_experiment_column] = (
+        pd.to_numeric(
+            geometry_df[geometry_experiment_column],
+            errors="raise",
+        )
+        .astype(int)
+    )
+
+    experiment_group_map = experiment_group_map.rename(
+        columns={
+            setup_experiment_column: geometry_experiment_column
+        }
+    )
 
     geometry_df = geometry_df.merge(
         experiment_group_map,
-        on="Experiment_Number",
+        on=geometry_experiment_column,
         how="left",
         validate="many_to_one",
     )
@@ -159,7 +178,7 @@ def attach_group_id(
         missing_experiments = sorted(
             geometry_df.loc[
                 unmatched,
-                "Experiment_Number",
+                geometry_experiment_column,
             ]
             .drop_duplicates()
             .tolist()
@@ -167,7 +186,7 @@ def attach_group_id(
 
         raise ValueError(
             "Some geometry experiments could not be mapped "
-            "to a Group_ID. Missing Experiment_Number values: "
+            "to a Group_ID. Missing Experiment_ID values: "
             f"{missing_experiments[:20]}"
         )
 
@@ -177,15 +196,14 @@ def attach_group_id(
 
     return geometry_df
 
-
 def load_geometry_data(
     path: str | Path,
     bending_setups_df: pd.DataFrame,
+    excluded_experiments: list[int] | set[int] | None = None,
 ) -> pd.DataFrame:
-    """
-    Load geometry data and ensure it contains Group_ID.
-    """
     geometry_df = read_table(path).copy()
+
+    geometry_df.columns = geometry_df.columns.str.strip()
 
     missing_geometry_columns = (
         REQUIRED_GEOMETRY_COLUMNS.difference(
@@ -196,15 +214,35 @@ def load_geometry_data(
     if missing_geometry_columns:
         raise KeyError(
             "Geometry data is missing required columns: "
-            f"{sorted(missing_geometry_columns)}"
+            f"{sorted(missing_geometry_columns)}. "
+            f"Available columns: {geometry_df.columns.tolist()}"
         )
+
+    excluded = set(excluded_experiments or [])
+
+    # Delete excluded experiments before assigning Group_ID.
+    if excluded:
+        if "Experiment_ID" not in geometry_df.columns:
+            raise KeyError(
+                "Cannot remove excluded experiments because "
+                "'Experiment_ID' is missing from geometry data."
+            )
+
+        geometry_df["Experiment_ID"] = pd.to_numeric(
+            geometry_df["Experiment_ID"],
+            errors="raise",
+        ).astype(int)
+
+        geometry_df = geometry_df[
+            ~geometry_df["Experiment_ID"].isin(excluded)
+        ].copy()
 
     geometry_df = attach_group_id(
         geometry_df=geometry_df,
         bending_setups_df=bending_setups_df,
     )
 
-    return geometry_df
+    return geometry_df.reset_index(drop=True)
 
 def load_selected_geometry_source(
     project_root: str | Path,
@@ -252,6 +290,10 @@ def load_selected_geometry_source(
     geometry_df = load_geometry_data(
         path=geometry_path,
         bending_setups_df=bending_setups_df,
+        excluded_experiments=data_config.get(
+            "excluded_experiments",
+            [],
+        ),
     )
 
     return geometry_df, source_name, geometry_path

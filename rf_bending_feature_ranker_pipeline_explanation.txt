@@ -1,0 +1,568 @@
+Purpose
+=======
+
+2_1_2_run_data_rf_bending_feature_ranker.py is an entry-point script. Its job is to run a Random Forest based ranking pipeline that answers this business question:
+
+Which bending setup parameters are most useful for predicting the final tube geometry?
+
+This pipeline is different from 2_1_1_run_data_rf_feature_ranker.py.
+
+The 2_1_1 pipeline ranks feature types from machine time-series summaries plus bending setup parameters.
+
+The 2_1_2 pipeline is bending-only. It ignores machine time-series signals and focuses only on static bending process parameters such as:
+
+- Pressure-die distance
+- Pressure-die boost
+- Mandrel position
+- Mandrel retraction timing
+- Collet boost
+- Clamp-die lateral position
+
+The target geometry is split into two outputs:
+
+- Main-axis [mm]
+- Secondary-axis [mm]
+
+Each experiment has a geometry profile across angles/distances, standardized to 45 points.
+
+Main file:
+
+    2_1_2_run_data_rf_bending_feature_ranker.py
+
+
+High-Level Logic
+================
+
+The script trains Random Forest models mainly to extract feature importance from bending setup parameters.
+
+The pipeline is:
+
+1. Load processed bending and geometry data.
+2. Clean bending setup columns.
+3. Build a bending-only feature matrix.
+4. Build geometry target arrays.
+5. Align bending features with valid geometry experiments.
+6. Train two Random Forest regressors:
+   - one for main-axis geometry
+   - one for secondary-axis geometry
+7. Extract feature importances for every bending parameter.
+8. Create three ranking tables:
+   - main-axis ranking
+   - secondary-axis ranking
+   - mean ranking across both axes
+9. Save ranking CSVs and trained Random Forest models.
+
+
+Entry Script
+============
+
+In 2_1_2_run_data_rf_bending_feature_ranker.py:
+
+    project_root = Path(".")
+
+    RFBendingFeatureRankerPipeline.run(
+        project_root=project_root,
+    )
+
+This means the script assumes it is run from the project root. All input and output paths are relative to ".".
+
+The runner itself does not contain the business logic. It delegates the full workflow to:
+
+    src/pipeline/rf_augmentation/rf_bending_feature_ranker_pipeline.py
+
+
+Step 1: Load Input Datasets
+===========================
+
+The pipeline loads:
+
+    data/processed/bending.csv
+    data/processed/geometry.csv
+
+Business meaning:
+
+- bending.csv contains one row per experiment with bending setup parameters.
+- geometry.csv contains measured final geometry of the tube at multiple angle/distance points.
+
+Unlike the 2_1_1 pipeline, this script does not load:
+
+    data/processed/machine_and_movement.csv
+
+That is intentional.
+
+Business logic:
+
+This script asks:
+
+    How much can the final tube geometry be explained by the planned/setup bending parameters alone?
+
+It does not use sensor dynamics, torque curves, or movement time-series signals.
+
+
+Step 2: Create an Empty Machine Table
+=====================================
+
+The code creates:
+
+    empty_machine = bending[["Experiment_ID"]].copy()
+
+This table contains only:
+
+    Experiment_ID
+
+Business logic:
+
+The shared dataset builder expects a "machine_movement_df" input. But for this pipeline, we do not want machine features. We only need Experiment_ID so the builder can merge with bending data and keep experiment alignment.
+
+So the empty machine table acts as an ID carrier.
+
+Conceptually:
+
+    empty_machine:
+
+    Experiment_ID
+    2
+    3
+    4
+    ...
+
+There are no machine features in it.
+
+
+Step 3: Preprocess Bending Data
+===============================
+
+The pipeline calls:
+
+    RFPreprocessor.preprocess_data(
+        machine_movement_df=empty_machine,
+        bending_df=bending,
+    )
+
+The preprocessor returns:
+
+    _, bending_clean
+
+The first output is ignored because this pipeline does not use machine data.
+
+The bending cleaner removes mostly constant setup descriptors:
+
+    Tube
+    Outer-diameter
+    Wall-thickness
+    Wiper-die shortening
+    Target-angle
+    Pressure-die lateral position
+
+Business logic:
+
+If these values are constant or almost constant across experiments, they cannot explain why geometry differs between experiments.
+
+For example, if all experiments use the same tube diameter, then tube diameter is not useful for ranking within this dataset. It may be physically important in general, but it cannot explain variation in this specific experiment collection.
+
+After cleaning, the bending features usually left are:
+
+    Pressure-die distance
+    Pressure-die boost
+    Mandrel position
+    Mandrel retraction timing
+    Collet boost
+    Clamp-die lateral position
+
+These are the actual variables the Random Forest ranks.
+
+
+Step 4: Build the Bending-Only Dataset
+======================================
+
+The pipeline calls:
+
+    RFFeatureRankerDatasetBuilder.build(
+        machine_movement_df=empty_machine,
+        bending_df=bending_clean,
+        geometry_df=geometry,
+        use_bending=True,
+    )
+
+This looks similar to the previous pipeline, but the input is different.
+
+Because machine_movement_df contains only Experiment_ID, and use_bending=True, the builder merges:
+
+    Experiment_ID-only table + cleaned bending parameters
+
+on:
+
+    Experiment_ID
+
+The merge uses:
+
+    how="inner"
+    validate="one_to_one"
+
+Business logic:
+
+- how="inner" keeps only experiments that exist in both inputs.
+- validate="one_to_one" protects against duplicated experiment rows.
+- Every experiment should have exactly one bending setup row.
+
+After the merge, Experiment_ID is removed from the model input.
+
+So the model input X contains only bending parameters, not IDs.
+
+Conceptual example:
+
+    Experiment_ID | Pressure-die distance | Pressure-die boost | Mandrel position | ...
+    2             | 0.3                   | 0.0                | -2909.8          | ...
+
+becomes:
+
+    Pressure-die distance | Pressure-die boost | Mandrel position | ...
+    0.3                   | 0.0                | -2909.8          | ...
+
+Business logic:
+
+Experiment_ID is useful for joining data, but it should not be used as a predictive feature. If the model learned from Experiment_ID, it would memorize experiment labels instead of learning process behavior.
+
+
+Step 5: Prepare Geometry Targets
+================================
+
+The dataset builder prepares two target arrays:
+
+    y_main
+    y_secondary
+
+For every experiment, the geometry data is processed as follows:
+
+1. Keep geometry rows for experiments available in the feature matrix.
+2. Sort each experiment's geometry by:
+
+       Angle[degree]ORDistance[mm]
+
+3. If an experiment has fewer than 45 geometry rows, drop it.
+4. If an experiment has 45 or more geometry rows, keep the first 45.
+5. Store the 45 Main-axis [mm] values.
+6. Store the 45 Secondary-axis [mm] values.
+
+The final target shapes are:
+
+    y_main      = (n_experiments, 45)
+    y_secondary = (n_experiments, 45)
+
+Business logic:
+
+The output is not one scalar geometry value. The output is a geometry profile over the bend.
+
+So each experiment has:
+
+    one row of bending settings
+
+and:
+
+    one 45-point main-axis geometry curve
+    one 45-point secondary-axis geometry curve
+
+This lets the Random Forest learn which bending parameters help predict the whole shape profile.
+
+
+Step 6: Align Features and Targets
+==================================
+
+Some experiments may be dropped if their geometry has fewer than 45 points.
+
+After target preparation, the builder aligns X with the valid geometry experiment IDs:
+
+    id_to_index = {eid: i for i, eid in enumerate(experiment_ids)}
+    valid_indices = [id_to_index[eid] for eid in aligned_ids]
+    X_aligned = X_df.iloc[valid_indices]
+
+Business logic:
+
+The row order of X must match the row order of y_main and y_secondary.
+
+If row 10 in X contains bending settings for Experiment 25, then row 10 in y_main and y_secondary must contain the geometry profile for Experiment 25.
+
+The final returned values are:
+
+    X_rf          -> bending feature matrix
+    y_main        -> main-axis 45-point target
+    y_secondary   -> secondary-axis 45-point target
+    feature_names -> bending parameter names
+
+
+Step 7: Train Random Forest Models
+==================================
+
+The pipeline creates two Random Forest regressors:
+
+    rf_main
+    rf_secondary
+
+with:
+
+    n_estimators=300
+    random_state=42
+    n_jobs=-1
+
+Business meaning of the parameters:
+
+- n_estimators=300: train 300 decision trees. More trees usually make feature importance more stable.
+- random_state=42: make the result reproducible.
+- n_jobs=-1: use all available CPU cores.
+
+The models are trained as:
+
+    rf_main.fit(X_rf, y_main)
+    rf_secondary.fit(X_rf, y_secondary)
+
+Business logic:
+
+rf_main learns:
+
+    bending parameters -> 45-point main-axis geometry profile
+
+rf_secondary learns:
+
+    bending parameters -> 45-point secondary-axis geometry profile
+
+Random Forest is useful here because:
+
+- it handles nonlinear relationships,
+- it can model interactions between bending parameters,
+- it does not require feature scaling,
+- it provides feature_importances_,
+- scikit-learn RandomForestRegressor supports multi-output targets.
+
+
+Step 8: Extract Bending Feature Importance
+==========================================
+
+After training, the code reads:
+
+    rf_main.feature_importances_
+    rf_secondary.feature_importances_
+
+Each value corresponds to one bending feature.
+
+Business meaning:
+
+A higher importance means the Random Forest used that bending parameter more often, and more effectively, to reduce prediction error.
+
+It does not prove physical causality. It means predictive usefulness inside this dataset and this model.
+
+
+Step 9: Build Ranking Tables
+============================
+
+The helper function _build_rank_df creates a ranking table from:
+
+    feature_names
+    importances
+    target_name
+
+It creates columns:
+
+    rank
+    target
+    bending_feature
+    importance
+
+Then it sorts by:
+
+    importance descending
+
+Business logic:
+
+The most predictive bending parameter gets rank 1.
+
+For the main-axis model, target is:
+
+    main_axis
+
+For the secondary-axis model, target is:
+
+    secondary_axis
+
+
+Step 10: Build Combined Mean Ranking
+====================================
+
+The pipeline then combines the two rankings.
+
+It takes:
+
+    main_rank bending_feature + importance
+
+and renames importance to:
+
+    main_importance
+
+It takes:
+
+    secondary_rank bending_feature + importance
+
+and renames importance to:
+
+    secondary_importance
+
+Then it merges them on:
+
+    bending_feature
+
+and calculates:
+
+    mean_importance = average(main_importance, secondary_importance)
+
+Finally, it sorts by:
+
+    mean_importance descending
+
+Business logic:
+
+Some bending parameters may be more important for the main axis, while others may be more important for the secondary axis.
+
+The combined ranking answers:
+
+    Which bending parameters are generally important across both geometry axes?
+
+This combined file is especially useful for later data augmentation or experiment planning, because it gives one priority order instead of two separate lists.
+
+
+Step 11: Save Outputs
+=====================
+
+The result directory is:
+
+    src/pipeline/rf_augmentation/result
+
+The model directory is:
+
+    src/pipeline/rf_augmentation/model
+
+The pipeline saves three CSV files:
+
+    src/pipeline/rf_augmentation/result/bending_feature_rank_main_axis.csv
+    src/pipeline/rf_augmentation/result/bending_feature_rank_secondary_axis.csv
+    src/pipeline/rf_augmentation/result/bending_feature_rank_mean_axis.csv
+
+It also saves two trained Random Forest models:
+
+    src/pipeline/rf_augmentation/model/rf_bending_feature_ranker_main_axis.joblib
+    src/pipeline/rf_augmentation/model/rf_bending_feature_ranker_secondary_axis.joblib
+
+
+Output File Meanings
+====================
+
+bending_feature_rank_main_axis.csv
+----------------------------------
+
+Ranks bending parameters by how useful they are for predicting the 45-point main-axis geometry profile.
+
+Columns:
+
+    rank
+    target
+    bending_feature
+    importance
+
+
+bending_feature_rank_secondary_axis.csv
+---------------------------------------
+
+Ranks bending parameters by how useful they are for predicting the 45-point secondary-axis geometry profile.
+
+Columns:
+
+    rank
+    target
+    bending_feature
+    importance
+
+
+bending_feature_rank_mean_axis.csv
+----------------------------------
+
+Combines the main-axis and secondary-axis importance values.
+
+Columns:
+
+    rank
+    bending_feature
+    main_importance
+    secondary_importance
+    mean_importance
+
+This is the most general bending-feature priority list.
+
+
+Example From Current Output
+===========================
+
+The existing combined ranking starts like this:
+
+    rank | bending_feature             | mean_importance
+    1    | Mandrel retraction timing   | 0.7275813475726189
+    2    | Collet boost                | 0.14172515643075934
+    3    | Mandrel position            | 0.05258285801931933
+    4    | Pressure-die distance       | 0.04019890784948413
+    5    | Pressure-die boost          | 0.036904384514072096
+    6    | Clamp-die lateral position  | 0.0010073456137461077
+
+Business interpretation:
+
+In the current fitted models, Mandrel retraction timing is by far the most predictive bending setup parameter for both geometry axes.
+
+Collet boost is the second most useful overall.
+
+Clamp-die lateral position contributes very little in this specific ranking result.
+
+Again, this is predictive ranking, not proof of physical causality.
+
+
+Important Interpretation
+========================
+
+This pipeline ranks bending setup parameters by predictive usefulness.
+
+A high importance means:
+
+    The Random Forest relied on this bending parameter more when predicting geometry.
+
+It does not necessarily mean:
+
+    This parameter physically causes the geometry change by itself.
+
+Feature importance can be affected by:
+
+- correlations between bending parameters,
+- limited dataset size,
+- the distribution of experiments,
+- Random Forest bias toward certain split patterns,
+- no separate train/test split in this script.
+
+There is no validation step in this runner. The same data is used for training and ranking. So the output should be used as an exploratory process-priority ranking, not as final proof of model generalization.
+
+
+Main Difference From 2_1_1
+==========================
+
+2_1_1_run_data_rf_feature_ranker.py:
+
+    Uses machine time-series summary features plus bending parameters.
+    Groups importance by feature type, such as mean, std, energy, max, etc.
+
+2_1_2_run_data_rf_bending_feature_ranker.py:
+
+    Uses only bending setup parameters.
+    Ranks the actual bending parameter names directly.
+
+So 2_1_1 answers:
+
+    Which kinds of extracted machine-signal features are useful?
+
+2_1_2 answers:
+
+    Which bending setup parameters are useful?
+
+

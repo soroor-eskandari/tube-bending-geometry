@@ -1,0 +1,969 @@
+Purpose
+=======
+
+2_1_3_run_data_rf_augmentator.py is an entry-point script for running the Random Forest geometry modeling pipeline after feature ranking has already been done.
+
+Despite the filename containing "augmentator", the current script configuration does not generate new synthetic geometry samples.
+
+Current configuration:
+
+    include_all_features = False
+    use_mlflow = False
+    sensor_augmentation_modes = ["raw"]
+
+This means:
+
+- use ranked feature types, not all feature types
+- do not log to MLflow
+- use raw cleaned sensor data
+- skip sensor-data augmentation
+- train final Random Forest models
+- evaluate them on train and test data
+- save model files, metrics, plots, and summaries
+
+Business question answered by this script:
+
+Can the selected machine-signal features plus bending setup parameters predict the final tube geometry profile?
+
+The target geometry is split into:
+
+- Main-axis [mm]
+- Secondary-axis [mm]
+
+Each target is a geometry profile across angle/distance points.
+
+
+High-Level Logic
+================
+
+The pipeline is:
+
+1. Set project paths and configuration.
+2. Loop over selected sensor augmentation modes.
+3. For the current script, run only the "raw" mode.
+4. Load processed machine, bending, geometry, and bending-group data.
+5. Load best ranked feature subsets from greedy search results.
+6. Preprocess machine and bending data.
+7. Skip sensor augmentation because mode is "raw".
+8. Split geometry into train and test sets using group-aware splitting.
+9. Build Random Forest training datasets.
+10. Train two final Random Forest models:
+    - one for main-axis geometry
+    - one for secondary-axis geometry
+11. Evaluate models on training data.
+12. Evaluate models on test data.
+13. Save models, metric tables, plots, group metrics, and summary files.
+
+
+Entry Script
+============
+
+Main file:
+
+    2_1_3_run_data_rf_augmentator.py
+
+The script sets:
+
+    project_root = Path(".")
+    output_dir = project_root / "data" / "rf_augmented"
+    include_all_features = False
+    use_mlflow = False
+    sensor_augmentation_modes = ["raw"]
+
+Business meaning:
+
+- project_root says all files are read relative to the project root.
+- output_dir says evaluation and comparison outputs go under data/rf_augmented.
+- include_all_features=False means the model uses the best ranked feature subsets found earlier, not every engineered feature.
+- use_mlflow=False means model metadata is saved locally only.
+- sensor_augmentation_modes=["raw"] means no sensor augmentation is applied.
+
+Then it loops:
+
+    for sensor_augmentation_mode in sensor_augmentation_modes:
+        RFAugmentationPipeline.run(...)
+
+Since the list contains only "raw", the pipeline runs once.
+
+
+Important Naming Clarification
+==============================
+
+The script name says:
+
+    rf_augmentator
+
+But with the current settings, this run is mainly a final RF training and evaluation pipeline.
+
+Sensor augmentation would only happen if sensor_augmentation_mode were something other than:
+
+    raw
+
+For example:
+
+    noise
+    time-wrapping
+    scaling
+    jittering
+    noise+time-wrapping+scaling+jittering
+
+But this script currently uses:
+
+    ["raw"]
+
+So the actual active path is:
+
+    raw cleaned sensor data -> feature extraction -> RF training -> evaluation
+
+not:
+
+    synthetic sample generation
+
+
+Step 1: Validate Sensor Augmentation Mode
+=========================================
+
+Implemented in:
+
+    src/pipeline/rf_augmentation/rf_augmentation_pipeline.py
+
+The pipeline checks whether the sensor augmentation mode is valid.
+
+Available modes are defined in:
+
+    src/pipeline/rf_augmentation/sensor_data_augmentor.py
+
+Examples:
+
+    raw
+    noise
+    time-wrapping
+    scaling
+    jittering
+    noise+time-wrapping
+    noise+scaling
+    noise+jittering
+    time-wrapping+scaling
+    noise+time-wrapping+scaling+jittering
+
+Current mode:
+
+    raw
+
+Business logic:
+
+The pipeline is designed to compare model behavior under different sensor-data augmentation strategies. But this runner currently performs only the baseline raw-data run.
+
+
+Step 2: Build Naming Suffixes
+=============================
+
+The pipeline builds:
+
+    feature_mode_suffix = "ranked_features"
+
+because:
+
+    include_all_features = False
+
+It also builds:
+
+    sensor_mode_suffix = "raw"
+
+because:
+
+    sensor_augmentation_mode = "raw"
+
+Then it builds:
+
+    paper_name = "rf_best_model_ranked_features_raw"
+
+Business logic:
+
+This name is used to save model files and summaries in a way that records the experiment configuration.
+
+Expected model names:
+
+    rf_main_rf_best_model_ranked_features_raw.pkl
+    rf_secondary_rf_best_model_ranked_features_raw.pkl
+    rf_summary_rf_best_model_ranked_features_raw.csv
+
+
+Step 3: Load Input Datasets
+===========================
+
+The pipeline loads:
+
+    data/processed/machine_and_movement.csv
+    data/processed/bending.csv
+    data/processed/geometry.csv
+    data/processed/processed_bending_setup.csv
+
+Business meaning:
+
+- machine_and_movement.csv contains machine time-series signals per experiment.
+- bending.csv contains static bending setup parameters per experiment.
+- geometry.csv contains measured final tube geometry.
+- processed_bending_setup.csv contains unique bending setup groups and experiment grouping information.
+
+The model learns:
+
+    machine signal summaries + bending setup parameters -> geometry profile
+
+
+Step 4: Load Best Ranked Feature Subsets
+========================================
+
+Because:
+
+    include_all_features = False
+
+the pipeline reads:
+
+    src/pipeline/rf_augmentation/result/greedy_search_results.csv
+
+This file comes from an earlier feature-subset search stage.
+
+The pipeline sorts:
+
+    r2_main_best descending
+
+and takes the row with the best main-axis score.
+
+From that row it reads:
+
+    main_subset
+
+Then it sorts:
+
+    r2_secondary_best descending
+
+and takes the row with the best secondary-axis score.
+
+From that row it reads:
+
+    secondary_subset
+
+Business logic:
+
+The main-axis and secondary-axis geometry may depend on different types of signal summaries.
+
+So the pipeline allows different selected feature types for:
+
+    main-axis model
+    secondary-axis model
+
+Example:
+
+The main-axis model might use feature types such as:
+
+    skew
+
+while the secondary-axis model might use:
+
+    iqr
+    p75
+    kurtosis
+
+The exact selected lists come from greedy_search_results.csv.
+
+
+Step 5: Preprocess Machine and Bending Data
+===========================================
+
+The pipeline calls:
+
+    RFPreprocessor.preprocess_data(
+        machine_movement_df=machine_movement,
+        bending_df=bending,
+    )
+
+Implemented in:
+
+    src/pipeline/rf_augmentation/rf_preprocessor.py
+
+For machine/movement data, it removes:
+
+- constant columns
+- known redundant columns
+- noisy columns
+- unnecessary torque/movement signals
+
+Examples of removed machine columns:
+
+    COLLET_ROTATING_Movement_[mm]
+    PRESSURE-DIE_LATERAL_Movement_[mm]
+    PRESSURE-DIE_LEFT_AXIAL_Movement_[mm]
+    BEND-DIE_VERTICAL_Movement_[mm]
+    MACHINE_PRESSURE-DIE_AXIAL_Max_Torque_[%]
+
+For bending data, it removes mostly constant setup descriptors:
+
+    Tube
+    Outer-diameter
+    Wall-thickness
+    Wiper-die shortening
+    Target-angle
+    Pressure-die lateral position
+
+Business logic:
+
+Features that are constant, redundant, noisy, or not useful for this dataset should not dominate or confuse the model.
+
+
+Step 6: Sensor Augmentation Decision
+====================================
+
+The pipeline checks:
+
+    if sensor_augmentation_mode != "raw":
+        SensorDataAugmentor.run(...)
+    else:
+        machine_movement_clean = raw_machine_movement_clean
+
+Current mode:
+
+    raw
+
+So this run does:
+
+    machine_movement_clean = raw_machine_movement_clean
+
+and logs that it is skipping SensorDataAugmentor.
+
+Business logic:
+
+This creates a clean baseline model using real sensor data only.
+
+Optional non-raw path:
+
+If the mode were not raw, the pipeline could modify sensor signals using methods such as:
+
+- noise
+- time-wrapping
+- scaling
+- jittering
+
+But this is not active in the current script.
+
+
+Step 7: Group-Aware Train/Test Split
+====================================
+
+Implemented in:
+
+    src/pipeline/rf_augmentation/data_splitter.py
+
+The pipeline calls:
+
+    DataSplittor.splittor(
+        geometry_df=geometry,
+        unique_bending_df=unique_bending,
+        test_size=0.2,
+        random_state=42,
+    )
+
+The splitter uses:
+
+    GroupShuffleSplit
+
+Business logic:
+
+Experiments can belong to the same bending setup group. If experiments from the same group appear in both train and test, the test set may become too easy because it contains nearly identical setup conditions already seen in training.
+
+Group-aware splitting keeps all experiments from the same Group_ID together:
+
+    a group is either in train or in test
+
+This gives a more realistic test of whether the model generalizes to unseen bending setup groups.
+
+The split uses:
+
+    test_size = 0.2
+    random_state = 42
+
+So about 20 percent of groups go to test, and the split is reproducible.
+
+
+Step 8: Build Training and Test Datasets
+========================================
+
+Implemented in:
+
+    src/pipeline/rf_augmentation/rf_dataset_builder.py
+
+The pipeline builds two datasets:
+
+    training dataset
+    test dataset
+
+Training dataset:
+
+    RFTrainingDatasetBuilder.build(
+        machine_movement__df=machine_movement_clean,
+        geometry_df=train_df,
+        bending_df=bending_clean,
+        main_selected_features=main_top_features,
+        secondary_selected_features=secondary_top_features,
+        return_experiment_ids=True,
+    )
+
+Test dataset:
+
+    RFTrainingDatasetBuilder.build(
+        machine_movement__df=raw_machine_movement_clean,
+        geometry_df=test_df,
+        bending_df=bending_clean,
+        main_selected_features=main_top_features,
+        secondary_selected_features=secondary_top_features,
+        return_experiment_ids=True,
+    )
+
+Since the current mode is raw, machine_movement_clean and raw_machine_movement_clean are effectively the same.
+
+Business logic:
+
+The builder creates separate feature matrices for:
+
+    main-axis model
+    secondary-axis model
+
+because each model can use a different selected feature subset.
+
+
+Step 9: Extract Manual Machine Features
+=======================================
+
+Inside RFTrainingDatasetBuilder, the machine time-series data is grouped by:
+
+    Experiment_ID
+
+For each experiment:
+
+1. Sort rows by Time_[s].
+2. Remove duplicate timestamps.
+3. For each machine signal, compute manual summary features.
+4. Keep only selected feature types if ranked features are being used.
+
+Manual features include:
+
+    mean
+    std
+    min
+    max
+    median
+    skew
+    kurtosis
+    iqr
+    range
+    energy
+    rms
+    sum
+    mean_abs
+    variance
+    mad
+    coeff_var
+    p10
+    p25
+    p75
+    p90
+    zero_crossings
+    peak_count
+    slope_mean
+
+Business logic:
+
+The raw machine data is time-series data. Random Forest needs fixed-size rows.
+
+So each signal curve is compressed into numeric summaries.
+
+Example:
+
+    one torque signal over time
+
+becomes:
+
+    torque_mean
+    torque_std
+    torque_skew
+    torque_iqr
+    ...
+
+If selected_features is not None, only the chosen feature types are kept.
+
+For example, if selected_features contains only:
+
+    skew
+
+then for every signal, the builder keeps:
+
+    signal_skew
+
+and drops:
+
+    signal_mean
+    signal_std
+    signal_min
+    ...
+
+
+Step 10: Merge Bending Features
+===============================
+
+After extracting machine features, the builder merges bending setup parameters into both model inputs:
+
+    X_main_df = X_main_df.merge(X_bending_df, on="Experiment_ID", how="left")
+    X_secondary_df = X_secondary_df.merge(X_bending_df, on="Experiment_ID", how="left")
+
+Business logic:
+
+The final geometry depends on both:
+
+    how the machine behaved during the process
+
+and:
+
+    which bending setup parameters were used
+
+So the model input combines:
+
+    machine signal summaries + bending setup parameters
+
+Missing values are filled with:
+
+    0.0
+
+Then Experiment_ID is removed before training.
+
+
+Step 11: Prepare Geometry Targets
+=================================
+
+The builder prepares:
+
+    Y_main_train
+    Y_sec_train
+    Y_main_test
+    Y_sec_test
+
+For each experiment, geometry rows are:
+
+1. Filtered by Experiment_ID.
+2. Sorted by Angle[degree]ORDistance[mm].
+3. Truncated to a common target length.
+
+The target length logic is:
+
+    target_len = 45
+    min_len = min(min(lengths), target_len)
+
+Business logic:
+
+Each experiment must have the same number of target points so the Random Forest can learn a fixed-size output vector.
+
+If all experiments have at least 45 points, each target is 45 points.
+
+The model learns:
+
+    input feature row -> geometry curve
+
+not just:
+
+    input feature row -> one geometry number
+
+
+Step 12: Train Final Random Forest Models
+=========================================
+
+Implemented in:
+
+    src/pipeline/rf_augmentation/rf_best_model_trainer.py
+
+The pipeline calls:
+
+    RFModelTrainer.train(...)
+
+with:
+
+    n_estimators = 1100
+    random_state = 42
+    use_mlflow = False
+
+It trains two models:
+
+    model_main
+    model_secondary
+
+Business logic:
+
+- model_main predicts the main-axis geometry profile.
+- model_secondary predicts the secondary-axis geometry profile.
+- 1100 trees gives a strong and stable Random Forest.
+- random_state=42 makes training reproducible.
+- n_jobs=-1 inside the trainer uses all CPU cores.
+
+The two training problems are:
+
+    X_main_train -> Y_main_train
+    X_sec_train  -> Y_sec_train
+
+The models are saved to:
+
+    src/pipeline/rf_augmentation/model/rf_main_rf_best_model_ranked_features_raw.pkl
+    src/pipeline/rf_augmentation/model/rf_secondary_rf_best_model_ranked_features_raw.pkl
+
+The summary is saved to:
+
+    src/pipeline/rf_augmentation/model/rf_summary_rf_best_model_ranked_features_raw.csv
+
+
+Step 13: Evaluate on Training Data
+==================================
+
+Implemented in:
+
+    src/pipeline/rf_augmentation/rf_model_evaluator.py
+
+The pipeline evaluates trained models on the same training data.
+
+It computes:
+
+    R2
+    MSE
+    RMSE
+    MAE
+
+both globally and per geometry point.
+
+Business logic:
+
+Training evaluation shows how well the model fits the data it learned from.
+
+This is useful for detecting underfitting, but it is not enough to prove generalization.
+
+Training outputs are saved under:
+
+    data/rf_augmented/train_evaluation_raw/
+
+Examples:
+
+    train_main_global_metrics.parquet
+    train_main_per_feature_metrics.parquet
+    train_secondary_global_metrics.parquet
+    train_secondary_per_feature_metrics.parquet
+    train_main_scatter_global.png
+    train_secondary_scatter_global.png
+    train_r2_mse_per_feature.png
+    global_metrics_table.png
+
+
+Step 14: Evaluate on Test Data
+==============================
+
+The pipeline predicts:
+
+    y_main_test_pred = model_main.predict(X_main_test)
+    y_sec_test_pred  = model_secondary.predict(X_sec_test)
+
+Then it compares predictions against:
+
+    Y_main_test
+    Y_sec_test
+
+Business logic:
+
+Test evaluation estimates how well the model performs on groups that were not used for training.
+
+Test outputs are saved under:
+
+    data/rf_augmented/test_evaluation_raw/
+
+Examples:
+
+    test_main_global_metrics.parquet
+    test_main_per_feature_metrics.parquet
+    test_secondary_global_metrics.parquet
+    test_secondary_per_feature_metrics.parquet
+
+
+Step 15: Build Metric Summaries
+===============================
+
+The pipeline builds combined train and test summaries.
+
+Metrics include:
+
+    r2_main
+    r2_secondary
+    mse_main
+    mse_secondary
+    rmse_main
+    rmse_secondary
+    mae_main
+    mae_secondary
+    nrmse_main
+    nrmse_secondary
+    mean_nrmse
+
+Business logic:
+
+NRMSE normalizes RMSE by the standard deviation of the true target values.
+
+This makes error easier to compare between main-axis and secondary-axis outputs if they have different scales.
+
+The pipeline also calculates:
+
+    train_test_gap_main
+    train_test_gap_secondary
+
+Business logic:
+
+These gaps help show possible overfitting.
+
+If training error is much better than test error, the model may be memorizing training groups rather than generalizing well.
+
+
+Step 16: Build Group-Level Metrics
+==================================
+
+The pipeline maps each experiment back to its Group_ID.
+
+Then it computes metrics per group for:
+
+    train split
+    test split
+
+Business logic:
+
+Overall metrics can hide weak performance on specific bending setup groups.
+
+Group-level metrics show where the model performs well or poorly by bending setup group.
+
+The group metric table includes:
+
+    sensor_augmentation_mode
+    sensor_mode_suffix
+    feature_mode
+    include_all_features
+    split
+    group_id
+    n_experiments
+    r2_main
+    r2_secondary
+    rmse_main
+    rmse_secondary
+    nrmse_main
+    nrmse_secondary
+    mean_nrmse
+
+
+Step 17: Save Final Result Summaries
+====================================
+
+The pipeline saves a final summary row to:
+
+    data/rf_augmented/final_model_results_raw.parquet
+
+It also updates comparison tables:
+
+    data/rf_augmented/sensor_augmentation_comparison.parquet
+    data/rf_augmented/sensor_augmentation_group_metrics.parquet
+
+Business logic:
+
+These files make it possible to compare multiple runs, for example:
+
+    raw
+    noise
+    scaling
+    jittering
+    noise+time-wrapping+scaling+jittering
+
+In the current script, only the raw row is produced or updated.
+
+
+What Is Not Done in This Current Run
+====================================
+
+This current runner does not:
+
+- generate new synthetic geometry rows
+- use RFDataGeneratorPipeline
+- use RFAugmentationGenerator.generate
+- use within-group interpolation
+- produce final_geometry_within_group_interpolation_raw.csv
+- run sensor augmentation methods
+- log to MLflow
+
+Those capabilities exist elsewhere in the codebase, but they are not activated by the current 2_1_3_run_data_rf_augmentator.py settings.
+
+
+Important Interpretation
+========================
+
+This pipeline trains and evaluates predictive models.
+
+It does not prove physical causality.
+
+A good model score means:
+
+    selected machine-signal summaries and bending setup parameters are useful for predicting geometry in this dataset
+
+It does not necessarily mean:
+
+    those features physically cause geometry changes by themselves
+
+Because the split is group-aware, the test score is more meaningful than a random row split. It checks performance on unseen bending setup groups.
+
+
+Main Difference From 2_1_1 and 2_1_2
+====================================
+
+2_1_1_run_data_rf_feature_ranker.py:
+
+    Ranks useful machine feature types and bending feature types.
+
+2_1_2_run_data_rf_bending_feature_ranker.py:
+
+    Ranks only bending setup parameters.
+
+2_1_3_run_data_rf_augmentator.py:
+
+    Uses previous ranking/search results to train and evaluate final Random Forest geometry models.
+
+
+Flowchart
+=========
+
+    Start: run 2_1_3 script
+        |
+        v
+    Set configuration
+        |
+        +--> project_root = "."
+        +--> output_dir = data/rf_augmented
+        +--> include_all_features = False
+        +--> use_mlflow = False
+        +--> sensor_augmentation_modes = ["raw"]
+        |
+        v
+    Loop over sensor augmentation modes
+        |
+        v
+    Current mode = raw
+        |
+        v
+    Run RFAugmentationPipeline
+        |
+        v
+    Validate sensor mode
+        |
+        v
+    Build naming suffixes
+        |
+        +--> feature_mode_suffix = ranked_features
+        +--> sensor_mode_suffix = raw
+        +--> paper_name = rf_best_model_ranked_features_raw
+        |
+        v
+    Load input datasets
+        |
+        +--> machine_and_movement.csv
+        +--> bending.csv
+        +--> geometry.csv
+        +--> processed_bending_setup.csv
+        |
+        v
+    Load greedy_search_results.csv
+        |
+        +--> choose best main-axis feature subset
+        +--> choose best secondary-axis feature subset
+        |
+        v
+    Preprocess machine and bending data
+        |
+        +--> drop constant machine signals
+        +--> drop redundant/noisy machine signals
+        +--> drop constant bending setup descriptors
+        |
+        v
+    Sensor augmentation decision
+        |
+        +--> mode is raw
+        +--> skip SensorDataAugmentor
+        +--> use raw cleaned sensor data
+        |
+        v
+    Group-aware train/test split
+        |
+        +--> map experiments to Group_ID
+        +--> keep each group fully in train or test
+        +--> test_size = 0.2
+        |
+        v
+    Build training dataset
+        |
+        +--> group machine data by Experiment_ID
+        +--> sort by Time_[s]
+        +--> extract manual signal features
+        +--> keep selected main feature types
+        +--> keep selected secondary feature types
+        +--> merge bending features
+        +--> prepare main and secondary geometry targets
+        |
+        v
+    Build test dataset
+        |
+        +--> same feature extraction logic
+        +--> same bending merge
+        +--> prepare test geometry targets
+        |
+        v
+    Train final Random Forest models
+        |
+        +--> model_main: X_main_train -> Y_main_train
+        +--> model_secondary: X_sec_train -> Y_sec_train
+        +--> n_estimators = 1100
+        |
+        v
+    Save trained models and model summary
+        |
+        +--> rf_main_rf_best_model_ranked_features_raw.pkl
+        +--> rf_secondary_rf_best_model_ranked_features_raw.pkl
+        +--> rf_summary_rf_best_model_ranked_features_raw.csv
+        |
+        v
+    Evaluate on training data
+        |
+        +--> train global metrics
+        +--> train per-point metrics
+        +--> train plots
+        |
+        v
+    Evaluate on test data
+        |
+        +--> test global metrics
+        +--> test per-point metrics
+        |
+        v
+    Build combined metric summaries
+        |
+        +--> R2, MSE, RMSE, MAE
+        +--> NRMSE
+        +--> train-test gaps
+        |
+        v
+    Build group-level metrics
+        |
+        +--> train group metrics
+        +--> test group metrics
+        |
+        v
+    Save final result files
+        |
+        +--> final_model_results_raw.parquet
+        +--> sensor_augmentation_comparison.parquet
+        +--> sensor_augmentation_group_metrics.parquet
+        |
+        v
+    End

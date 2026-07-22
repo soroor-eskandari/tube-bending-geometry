@@ -27,31 +27,6 @@ def _decode_int_list(value: object) -> list[int]:
 
     return [int(item) for item in value]
 
-
-def load_split_metadata(path: str | Path) -> pd.DataFrame:
-    path = Path(path)
-
-    if not path.exists():
-        raise FileNotFoundError(f"Split metadata was not found: {path}")
-
-    split_df = pd.read_parquet(path)
-
-    required = {
-        "split_index",
-        "train_group_ids",
-        "test_group_ids",
-    }
-    missing = required.difference(split_df.columns)
-
-    if missing:
-        raise KeyError(
-            "Split metadata is missing columns: "
-            f"{sorted(missing)}"
-        )
-
-    return split_df
-
-
 def get_split_row(
     split_metadata_df: pd.DataFrame,
     split_index: int,
@@ -76,7 +51,6 @@ def get_split_row(
         )
 
     return matches.iloc[0]
-
 
 def make_train_test_split(
     geometry_df: pd.DataFrame,
@@ -125,3 +99,63 @@ def make_train_test_split(
         test_df.reset_index(drop=True),
         split_row,
     )
+
+def _normalise_group_ids_for_comparison(
+    value: object,
+) -> tuple[int, ...]:
+    return tuple(sorted(_decode_int_list(value)))
+
+def load_split_metadata(
+    path: str | Path,
+) -> pd.DataFrame:
+    path = Path(path)
+
+    if not path.exists():
+        raise FileNotFoundError(
+            f"Split metadata was not found: {path}"
+        )
+
+    split_df = pd.read_parquet(path).copy()
+
+    required = {
+        "split_index",
+        "train_group_ids",
+        "test_group_ids",
+    }
+
+    missing = required.difference(split_df.columns)
+
+    if missing:
+        raise KeyError(
+            "Split metadata is missing columns: "
+            f"{sorted(missing)}"
+        )
+
+    split_df["_train_key"] = (
+        split_df["train_group_ids"]
+        .apply(_normalise_group_ids_for_comparison)
+    )
+
+    split_df["_test_key"] = (
+        split_df["test_group_ids"]
+        .apply(_normalise_group_ids_for_comparison)
+    )
+
+    split_df = (
+        split_df.drop_duplicates(
+            subset=[
+                "split_index",
+                "_train_key",
+                "_test_key",
+            ]
+        )
+        .drop(
+            columns=[
+                "_train_key",
+                "_test_key",
+            ]
+        )
+        .reset_index(drop=True)
+    )
+
+    return split_df

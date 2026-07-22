@@ -1,0 +1,610 @@
+Purpose
+=======
+
+2_1_1_run_data_rf_feature_ranker.py is an entry-point script. Its job is to run a Random Forest based feature-ranking pipeline that answers this business question:
+
+Which machine-signal summary features and bending setup parameters are most useful for predicting the final tube geometry?
+
+The target geometry is split into two outputs:
+
+- Main-axis [mm]
+- Secondary-axis [mm]
+
+Each experiment has a geometry profile across angles/distances, standardized to 45 points.
+
+
+High-Level Logic
+================
+
+The script does not train a final production prediction model. It trains Random Forest models mainly to extract feature importance.
+
+The pipeline is:
+
+1. Load processed machine, bending, and geometry data.
+2. Clean obviously useless or problematic columns.
+3. Convert time-series machine signals into one feature row per experiment.
+4. Clean extracted machine features.
+5. Merge machine features with bending setup parameters.
+6. Build target arrays from geometry data.
+7. Train two Random Forest regressors:
+   - one for main-axis geometry
+   - one for secondary-axis geometry
+8. Aggregate feature importances by feature type.
+9. Save ranked feature-type CSVs and trained ranking models.
+
+
+Entry Script
+============
+
+Main file:
+
+    2_1_1_run_data_rf_feature_ranker.py
+
+The script does:
+
+    project_root = Path(".")
+
+    RFRankerPipeline.run(
+        project_root=project_root,
+    )
+
+This means the pipeline assumes it is run from the project root. It reads files relative to ".".
+
+The variable output_dir is created:
+
+    output_dir = project_root / "data" / "rf_augmented"
+
+but it is not actually used in this script.
+
+The real outputs are saved under:
+
+    src/pipeline/rf_augmentation/result/
+    src/pipeline/rf_augmentation/model/
+
+
+Step 1: Load Input Datasets
+===========================
+
+The pipeline loads:
+
+    data/processed/machine_and_movement.csv
+    data/processed/bending.csv
+    data/processed/geometry.csv
+
+Business meaning:
+
+- machine_and_movement.csv contains time-series process data per experiment. It has Experiment_ID, Time_[s], torque signals, and movement signals.
+- bending.csv contains one row per experiment describing bending setup parameters.
+- geometry.csv contains measured final tube geometry at multiple angle/distance points.
+
+The business relationship being studied is:
+
+    machine behavior + bending setup -> final tube geometry profile
+
+
+Step 2: Preprocess Raw Inputs
+=============================
+
+Implemented in:
+
+    src/pipeline/rf_augmentation/rf_preprocessor.py
+
+For machine/movement data, the code removes columns that are known to be weak, constant, redundant, noisy, or unnecessary.
+
+It drops constant machine movement columns:
+
+    COLLET_ROTATING_Movement_[mm]
+    PRESSURE-DIE_LATERAL_Movement_[mm]
+
+Business logic:
+
+Constant signals do not explain geometry differences because they do not vary across experiments.
+
+It drops a known highly correlated signal:
+
+    PRESSURE-DIE_LEFT_AXIAL_Movement_[mm]
+
+when both of these columns exist:
+
+    CLAMP-DIE_LATERAL_Movement_[mm]
+    PRESSURE-DIE_LEFT_AXIAL_Movement_[mm]
+
+Business logic:
+
+If two signals carry almost the same information, keeping both can make ranking unstable. The Random Forest may split importance between duplicate information sources.
+
+It drops noisy machine/movement columns:
+
+    BEND-DIE_VERTICAL_Movement_[mm]
+    MACHINE_PRESSURE-DIE_AXIAL_Max_Torque_[%]
+
+Business logic:
+
+Noisy signals can add variance without adding useful predictive information.
+
+It also drops unnecessary machine torque columns:
+
+    MACHINE_BEND-DIE_VERTICAL_Max_Torque_[%]
+    MACHINE_COLLET_ROTATING_Max_Torque_[%]
+    MACHINE_PRESSURE-DIE_LEFT_AXIAL_Max_Torque_[%]
+
+For bending setup data, it drops mostly constant setup descriptors:
+
+    Tube
+    Outer-diameter
+    Wall-thickness
+    Wiper-die shortening
+    Target-angle
+    Pressure-die lateral position
+
+Business logic:
+
+If every experiment uses the same tube diameter, wall thickness, or target angle, those values cannot explain differences between experiments inside this dataset.
+
+After this step:
+
+    raw machine time series -> cleaned machine time series
+    raw bending setup       -> cleaned bending setup
+
+
+Step 3: Select Machine Signal Columns
+=====================================
+
+The pipeline builds:
+
+    signal_cols_machine = [
+        col for col in machine_movement_clean.columns
+        if col not in ["Experiment_ID", "Time_[s]"]
+    ]
+
+Business logic:
+
+- Experiment_ID identifies the experiment.
+- Time_[s] orders the time series.
+- Every other column is treated as a physical machine signal.
+
+So the model does not directly use Time_[s] or Experiment_ID as signal values.
+
+
+Step 4: Extract Time-Series Features
+====================================
+
+Implemented in:
+
+    src/pipeline/rf_augmentation/rf_feature_extractor.py
+
+The pipeline calls:
+
+    TimeSeriesFeatureExtractor.extract_features(
+        df=machine_movement_clean,
+        signal_cols=signal_cols_machine,
+        tsfel_included=False
+    )
+
+Important:
+
+    tsfel_included=False
+
+So TSFEL features are disabled in this run. Only manually engineered features are extracted.
+
+For each Experiment_ID, the code:
+
+1. Groups rows belonging to the experiment.
+2. Sorts them by Time_[s].
+3. Removes duplicate timestamps.
+4. Creates one output row for the experiment.
+5. Loops through every machine signal.
+6. Converts the full signal curve into summary numbers.
+
+The manual features include:
+
+    min
+    max
+    mean
+    std
+    median
+    skew
+    kurtosis
+    p10
+    p25
+    p75
+    p90
+    range
+    iqr
+    energy
+    zero_crossings
+    num_peaks
+    mean_abs_diff
+    rms
+    var
+    sum
+    length
+    max_abs
+
+The code comment says "23", but the actual code creates 22 manual features per signal.
+
+Business meaning of these features:
+
+- min, max, range, max_abs describe signal extremes.
+- mean, median, sum describe average level or accumulated magnitude.
+- std, var, iqr, and percentiles describe spread and variability.
+- skew and kurtosis describe distribution shape.
+- energy and rms describe signal intensity.
+- zero_crossings describes how often the signal changes sign.
+- num_peaks describes how many local peaks occur.
+- mean_abs_diff describes roughness or dynamic change rate.
+- length describes the number of sampled points.
+
+Business logic:
+
+Random Forest cannot easily use variable-length time-series curves directly. This step compresses each time-series signal into fixed-length descriptors.
+
+Example:
+
+    Experiment 2, torque signal over time:
+    [0.55, 0.60, 0.48, ...]
+
+becomes:
+
+    torque_manual_min
+    torque_manual_max
+    torque_manual_mean
+    torque_manual_std
+    ...
+
+After this step:
+
+    many time rows per experiment -> one feature row per experiment
+
+
+Step 5: Clean Extracted Features
+================================
+
+Implemented in:
+
+    src/pipeline/rf_augmentation/rf_feature_cleaner.py
+
+The cleaner does:
+
+1. Preserve Experiment_ID.
+2. Drop Time_[s] if it exists.
+3. Remove columns that are entirely NaN.
+4. Remove constant columns.
+5. Fill remaining NaNs using each column median.
+6. Remove highly correlated features above corr_threshold=0.95.
+7. Reattach Experiment_ID.
+
+The correlation filtering logic is important.
+
+If two features are highly correlated, the code keeps the one that has stronger correlation with a target.
+
+The target passed here is:
+
+    (geometry["Main-axis [mm]"] + geometry["Secondary-axis [mm]"]) / 2
+
+Business logic:
+
+This is an approximate "average geometry size" target. If two features are redundant, the cleaner tries to keep the one more related to overall geometry.
+
+Caveat:
+
+The geometry table has multiple rows per experiment, while extracted features have one row per experiment. Pandas correlation aligns by row index, not by Experiment_ID. So this target alignment may be rough. The intended business logic is clear, but this specific implementation may produce imperfect correlation-based filtering.
+
+
+Step 6: Build the Feature-Ranking Dataset
+=========================================
+
+Implemented in:
+
+    src/pipeline/rf_augmentation/rf_feature_ranking_dataset_builder.py
+
+The pipeline calls:
+
+    RFFeatureRankerDatasetBuilder.build(
+        machine_movement_df=machine_movement_features_clean,
+        bending_df=bending_clean,
+        geometry_df=geometry,
+        use_bending=True,
+    )
+
+Because use_bending=True, the final feature matrix includes:
+
+    machine time-series summary features + bending setup parameters
+
+The builder merges machine features and bending setup parameters on:
+
+    Experiment_ID
+
+The merge uses:
+
+    how="inner"
+    validate="one_to_one"
+
+Business logic:
+
+- Inner join keeps only experiments that exist in both datasets.
+- validate="one_to_one" enforces one row per experiment on both sides.
+- If duplicates exist, the merge fails instead of silently corrupting the dataset.
+
+Then Experiment_ID is removed from the model input.
+
+Business logic:
+
+Experiment_ID is useful for joining data, but it should not be used as a predictive feature. If the model learned from Experiment_ID, it could memorize experiment labels instead of learning process behavior.
+
+
+Step 7: Build Geometry Targets
+==============================
+
+The target builder standardizes geometry to exactly 45 points per experiment.
+
+For each experiment:
+
+1. Filter geometry rows belonging to that experiment.
+2. Sort by Angle[degree]ORDistance[mm].
+3. If the experiment has fewer than 45 rows, drop it.
+4. If the experiment has 45 or more rows, take the first 45.
+5. Store Main-axis [mm] as one 45-value vector.
+6. Store Secondary-axis [mm] as one 45-value vector.
+
+So the targets become:
+
+    y_main shape      = (n_experiments, 45)
+    y_secondary shape = (n_experiments, 45)
+
+Business logic:
+
+Each experiment produces a geometry curve, not a single number. The model learns to predict a 45-point geometry profile.
+
+Example:
+
+    Experiment 2 main-axis:
+    [21.45, 21.48, 21.51, ..., point 45]
+
+    Experiment 2 secondary-axis:
+    [22.14, 22.10, 22.08, ..., point 45]
+
+
+Step 8: Align X and y
+=====================
+
+After target preparation, some experiments may have been dropped because they had fewer than 45 geometry points.
+
+The builder aligns the feature matrix X to the remaining valid experiment IDs:
+
+    id_to_index = {eid: i for i, eid in enumerate(experiment_ids)}
+    valid_indices = [id_to_index[eid] for eid in aligned_ids]
+    X_aligned = X_df.iloc[valid_indices]
+
+Business logic:
+
+Every row in X must match the same experiment row in y_main and y_secondary.
+
+Final returned values:
+
+    X_rf          -> model input features
+    y_main        -> main-axis 45-point target
+    y_secondary   -> secondary-axis 45-point target
+    feature_names -> names of input features
+
+
+Step 9: Train Random Forest Models
+==================================
+
+Implemented in:
+
+    src/pipeline/rf_augmentation/rf_feature_type_ranker.py
+
+The pipeline trains two models:
+
+    RandomForestRegressor for main-axis geometry
+    RandomForestRegressor for secondary-axis geometry
+
+Default parameters:
+
+    n_estimators=300
+    random_state=42
+    n_jobs=-1
+
+Business logic:
+
+- n_estimators=300 trains 300 trees, which gives more stable feature importance.
+- random_state=42 makes results reproducible.
+- n_jobs=-1 uses all CPU cores.
+- Random Forest can model nonlinear relationships.
+- Random Forest does not require feature scaling.
+- RandomForestRegressor supports multi-output regression, so each model predicts all 45 geometry points at once.
+
+The models learn:
+
+    X_rf -> y_main
+    X_rf -> y_secondary
+
+
+Step 10: Convert Feature Importance into Feature-Type Ranking
+=============================================================
+
+Random Forest produces one importance score per input feature.
+
+This pipeline does not only rank individual feature columns. It groups features into feature types.
+
+For manual machine features:
+
+    BEND-DIE_ROTATING_Angle_[deg]_manual_mean -> mean
+    BEND-DIE_ROTATING_Angle_[deg]_manual_std  -> std
+    BEND-DIE_ROTATING_Angle_[deg]_manual_max  -> max
+
+The feature type is the last token after "_".
+
+So all features ending in:
+
+    _manual_mean
+
+are grouped as:
+
+    mean
+
+All features ending in:
+
+    _manual_std
+
+are grouped as:
+
+    std
+
+Then the importances are summed by feature type.
+
+Business meaning:
+
+Instead of only asking:
+
+    Which exact signal column matters?
+
+this asks:
+
+    Which kind of signal summary matters most?
+
+For example, it can tell whether mean, max, energy, rms, or num_peaks tends to be more useful across all machine signals.
+
+For bending features, many names do not contain underscores, so the full bending column name becomes its feature type, for example:
+
+    Pressure-die boost
+    Mandrel position
+    Collet boost
+
+
+Step 11: Save Outputs
+=====================
+
+The trained ranking models are saved to:
+
+    src/pipeline/rf_augmentation/model/rf_feature_type_ranker_main.joblib
+    src/pipeline/rf_augmentation/model/rf_feature_type_ranker_secondary.joblib
+
+The ranked feature-type CSVs are saved to:
+
+    src/pipeline/rf_augmentation/result/feature_type_rank_main.csv
+    src/pipeline/rf_augmentation/result/feature_type_rank_secondary.csv
+
+Each CSV contains roughly:
+
+    feature_type, importance
+    mean, ...
+    std, ...
+    Pressure-die boost, ...
+    ...
+
+The higher the importance, the more useful that feature type was for predicting the geometry target.
+
+
+Important Interpretation
+========================
+
+This pipeline ranks predictive usefulness, not physical causality.
+
+A high importance means:
+
+    The Random Forest used this feature type often to reduce prediction error.
+
+It does not prove:
+
+    This feature physically causes the geometry change.
+
+There is also no train/test split in this script. The feature ranking is based on models trained on all available data, so it is useful for exploratory ranking, not final generalization performance.
+
+
+Flowchart
+=========
+
+    Start: run 2_1_1 script
+        |
+        v
+    Set project_root = current directory
+        |
+        v
+    Load processed CSV files
+        |
+        +--> machine_and_movement.csv
+        +--> bending.csv
+        +--> geometry.csv
+        |
+        v
+    Preprocess machine/movement data
+        |
+        +--> Drop constant signals
+        +--> Drop highly correlated known signal
+        +--> Drop noisy/unnecessary signals
+        |
+        v
+    Preprocess bending setup data
+        |
+        +--> Drop constant setup parameters
+        |
+        v
+    Select machine signal columns
+        |
+        v
+    Group machine data by Experiment_ID
+        |
+        v
+    Sort by Time_[s] and remove duplicate timestamps
+        |
+        v
+    Extract manual time-series features
+        |
+        +--> min, max, mean, std, median
+        +--> percentiles, range, IQR
+        +--> energy, RMS, peaks, zero crossings
+        +--> variance, sum, length, max_abs
+        |
+        v
+    Clean extracted features
+        |
+        +--> Remove all-NaN columns
+        +--> Remove constant columns
+        +--> Fill NaNs with median
+        +--> Remove highly correlated features
+        |
+        v
+    Merge machine features with bending features
+        |
+        v
+    Prepare geometry targets
+        |
+        +--> Group geometry by Experiment_ID
+        +--> Sort by angle/distance
+        +--> Keep first 45 points
+        +--> Drop experiments with fewer than 45 points
+        |
+        v
+    Align X with valid geometry experiment IDs
+        |
+        +-----------------------------+
+        |                             |
+        v                             v
+    Train RF for main-axis       Train RF for secondary-axis
+    geometry profile             geometry profile
+        |                             |
+        v                             v
+    Get main feature             Get secondary feature
+    importances                  importances
+        |                             |
+        v                             v
+    Extract feature type         Extract feature type
+    from each feature name       from each feature name
+        |                             |
+        v                             v
+    Sum importance by            Sum importance by
+    feature type                 feature type
+        |                             |
+        v                             v
+    Save                         Save
+    feature_type_rank_main.csv   feature_type_rank_secondary.csv
+        |                             |
+        +-------------+---------------+
+                      |
+                      v
+              Save trained RF ranking models
+                      |
+                      v
+                    End

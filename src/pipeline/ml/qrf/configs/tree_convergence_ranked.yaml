@@ -1,4 +1,4 @@
-experiment_name: qrf_tree_convergence
+experiment_name: qrf_tree_convergence_ranked
 
 paths:
   bending_setups: data/rf_augmented/ui_data/unique_bending_setups.csv
@@ -37,16 +37,32 @@ model:
 
 search:
   split_selection:
-    mode: ranked
+    mode: ranking
     top_n: 3
     worst_n: 3
 
-    split_indices:
-      main: []
-      secondary: []
+    rank_columns:
+      main: qrf_rank_main
+      secondary: qrf_rank_secondary
 
-  n_estimators: [10, 20, 30, 40, 50, 60, 70, 80, 90, 100]
-  axes: [main, secondary]
+  # This field is populated automatically in usage.ipynb.
+  split_indices: []
+
+  n_estimators:
+    - 10
+    - 20
+    - 30
+    - 40
+    - 50
+    - 60
+    - 70
+    - 80
+    - 90
+    - 100
+
+  axes:
+    - main
+    - secondary
 
 output:
   save_predictions: true

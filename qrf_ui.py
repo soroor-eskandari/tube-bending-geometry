@@ -49,9 +49,15 @@ split_metadata_path = (
     / "various_splits.parquet"
 )
 
-QRF_RANKING_SOURCE = (
-    "sensor_augmented_noise__time_wrapping__scaling__jittering"
+
+bending_setup_catalog_path = (
+    project_root
+    / "data"
+    / "rf_augmented"
+    / "ui_data"
+    / "unique_bending_setups.csv"
 )
+
 
 QRF_EXCLUDED_EXPERIMENTS = [
     1,
@@ -120,6 +126,51 @@ def load_csv(path, file_mtime):
     return pd.read_csv(path)
 
 
+
+@st.cache_data
+def load_bending_setup_catalog(
+    catalog_path: str,
+    catalog_mtime: float,
+) -> pd.DataFrame:
+    """
+    Load one bending-setup row per Group_ID for UI display.
+    """
+    del catalog_mtime
+
+    catalog_df = read_table(
+        Path(catalog_path)
+    ).copy()
+
+    if "Group_ID" not in catalog_df.columns:
+        raise KeyError(
+            "Bending setup catalog is missing 'Group_ID'."
+        )
+
+    catalog_df["Group_ID"] = pd.to_numeric(
+        catalog_df["Group_ID"],
+        errors="raise",
+    ).astype(int)
+
+    if catalog_df["Group_ID"].duplicated().any():
+        duplicated_groups = sorted(
+            catalog_df.loc[
+                catalog_df["Group_ID"].duplicated(keep=False),
+                "Group_ID",
+            ]
+            .unique()
+            .tolist()
+        )
+
+        raise ValueError(
+            "Bending setup catalog must contain one row per "
+            f"Group_ID. Duplicated groups: {duplicated_groups}"
+        )
+
+    return catalog_df.sort_values(
+        "Group_ID"
+    ).reset_index(drop=True)
+
+
 def decode_experiment_ids(value: object) -> list[int]:
     if isinstance(value, str):
         value = ast.literal_eval(value)
@@ -167,22 +218,42 @@ def load_preprocessed_geometry(
 def load_best_splits_by_target(
     metadata_path: str,
     metadata_mtime: float,
-    ranking_source: str,
 ) -> dict[str, dict]:
-    del metadata_mtime
+    """
+    Load one independently ranked Top-1 split per target axis.
 
-    split_df = pd.read_parquet(metadata_path)
+    The split catalog contains one row per split_index. Main and
+    secondary ranking values are stored in separate columns, so no
+    geometry_source column is required.
+    """
+    del metadata_mtime
 
     required_columns = {
         "split_index",
-        "geometry_source",
+        "split_name",
+        "train_group_ids",
+        "test_group_ids",
         "train_experiment_ids",
         "test_experiment_ids",
         "qrf_rank_main",
+        "qrf_score_main",
         "qrf_rank_secondary",
+        "qrf_score_secondary",
     }
 
-    missing_columns = required_columns.difference(split_df.columns)
+    split_df = pd.read_parquet(
+        metadata_path,
+        columns=sorted(required_columns),
+    )
+
+    if split_df.empty:
+        raise ValueError(
+            f"Stored split metadata is empty: {metadata_path}"
+        )
+
+    missing_columns = required_columns.difference(
+        split_df.columns
+    )
 
     if missing_columns:
         raise KeyError(
@@ -190,67 +261,140 @@ def load_best_splits_by_target(
             f"{sorted(missing_columns)}"
         )
 
-    source_df = split_df[
-        split_df["geometry_source"]
-        .astype(str)
-        .eq(ranking_source)
-    ].copy()
+    split_df["split_index"] = pd.to_numeric(
+        split_df["split_index"],
+        errors="raise",
+    ).astype(int)
 
-    if source_df.empty:
-        available_sources = sorted(
-            split_df["geometry_source"]
-            .dropna()
-            .astype(str)
+    if split_df["split_index"].duplicated().any():
+        duplicated_indices = sorted(
+            split_df.loc[
+                split_df["split_index"].duplicated(keep=False),
+                "split_index",
+            ]
             .unique()
             .tolist()
         )
 
         raise ValueError(
-            f"No split data found for {ranking_source!r}. "
-            f"Available sources: {available_sources}"
+            "various_splits.parquet must contain exactly one row "
+            "per split_index. Duplicated indices: "
+            f"{duplicated_indices}"
         )
 
-    split_catalog = source_df.drop_duplicates(
-        subset=["split_index"]
-    ).copy()
-
     target_rank_columns = {
-        "Main-axis [mm]": "qrf_rank_main",
-        "Secondary-axis [mm]": "qrf_rank_secondary",
+        "Main-axis [mm]": {
+            "axis": "main",
+            "rank": "qrf_rank_main",
+            "score": "qrf_score_main",
+        },
+        "Secondary-axis [mm]": {
+            "axis": "secondary",
+            "rank": "qrf_rank_secondary",
+            "score": "qrf_score_secondary",
+        },
     }
 
-    selected = {}
+    selected: dict[str, dict] = {}
 
-    for target_name, rank_column in target_rank_columns.items():
-        ranked_df = split_catalog.dropna(
-            subset=[rank_column]
+    for target_name, columns in target_rank_columns.items():
+        rank_column = columns["rank"]
+        score_column = columns["score"]
+
+        ranked_df = split_df.dropna(
+            subset=[rank_column, score_column]
         ).copy()
+
+        if ranked_df.empty:
+            raise ValueError(
+                f"No QRF ranking exists for {target_name!r}. "
+                "Run run_qrf_split_ranking.py first."
+            )
 
         ranked_df[rank_column] = pd.to_numeric(
             ranked_df[rank_column],
             errors="raise",
         ).astype(int)
 
-        top_df = ranked_df[
-            ranked_df[rank_column].eq(1)
-        ].drop_duplicates(subset=["split_index"])
+        ranked_df[score_column] = pd.to_numeric(
+            ranked_df[score_column],
+            errors="raise",
+        ).astype(float)
+
+        top_df = (
+            ranked_df[
+                ranked_df[rank_column].eq(1)
+            ]
+            .copy()
+            .reset_index(drop=True)
+        )
 
         if len(top_df) != 1:
             raise ValueError(
-                f"Expected one Top-1 split for {target_name}, "
-                f"but found {len(top_df)}."
+                f"Expected exactly one rank-1 split for "
+                f"{target_name!r}, but found {len(top_df)}. "
+                f"Split indices: "
+                f"{top_df['split_index'].astype(int).tolist()}"
             )
 
         row = top_df.iloc[0]
 
+        train_group_ids = decode_experiment_ids(
+            row["train_group_ids"]
+        )
+        test_group_ids = decode_experiment_ids(
+            row["test_group_ids"]
+        )
+        train_experiment_ids = decode_experiment_ids(
+            row["train_experiment_ids"]
+        )
+        test_experiment_ids = decode_experiment_ids(
+            row["test_experiment_ids"]
+        )
+
+        if not train_group_ids or not test_group_ids:
+            raise ValueError(
+                f"The rank-1 split for {target_name!r} has an "
+                "empty train or test group list."
+            )
+
+        if not train_experiment_ids or not test_experiment_ids:
+            raise ValueError(
+                f"The rank-1 split for {target_name!r} has an "
+                "empty train or test experiment list."
+            )
+
+        group_overlap = set(train_group_ids).intersection(
+            test_group_ids
+        )
+        experiment_overlap = set(
+            train_experiment_ids
+        ).intersection(
+            test_experiment_ids
+        )
+
+        if group_overlap:
+            raise ValueError(
+                f"Group leakage in the rank-1 split for "
+                f"{target_name!r}: {sorted(group_overlap)}"
+            )
+
+        if experiment_overlap:
+            raise ValueError(
+                f"Experiment leakage in the rank-1 split for "
+                f"{target_name!r}: {sorted(experiment_overlap)}"
+            )
+
         selected[target_name] = {
+            "axis": columns["axis"],
             "split_index": int(row["split_index"]),
-            "train_experiment_ids": decode_experiment_ids(
-                row["train_experiment_ids"]
-            ),
-            "test_experiment_ids": decode_experiment_ids(
-                row["test_experiment_ids"]
-            ),
+            "split_name": str(row["split_name"]),
+            "qrf_rank": int(row[rank_column]),
+            "qrf_score": float(row[score_column]),
+            "train_group_ids": train_group_ids,
+            "test_group_ids": test_group_ids,
+            "train_experiment_ids": train_experiment_ids,
+            "test_experiment_ids": test_experiment_ids,
         }
 
     return selected
@@ -578,130 +722,125 @@ def predict_split_group(
     )
 
 
-st.sidebar.header("Controls")
 
-geometry_sources = qrf_training_geometry_sources(project_root)
-geometry_source = st.sidebar.selectbox(
-    "Dataset",
-    list(geometry_sources),
-    format_func=dataset_label,
-)
+def load_target_test_predictions_from_artifact(
+    geometry_source: str,
+    target_name: str,
+    split_config: dict,
+) -> pd.DataFrame:
+    axis = target_axis(target_name)
 
-geometry_path = geometry_sources[geometry_source]
-
-st.sidebar.markdown(
-    "Using "
-    f"`{geometry_path.relative_to(project_root)}`."
-)
-
-if not geometry_path.exists():
-    st.warning(f"Missing geometry source file for `{geometry_source}`.")
-    st.stop()
-
-if not split_metadata_path.exists():
-    st.error(
-        f"Stored split metadata was not found: "
-        f"{split_metadata_path}"
-    )
-    st.stop()
-
-geometry_df = load_preprocessed_geometry(
-    str(geometry_path),
-    geometry_path.stat().st_mtime,
-)
-
-splits_by_target = load_best_splits_by_target(
-    str(split_metadata_path),
-    split_metadata_path.stat().st_mtime,
-    QRF_RANKING_SOURCE,
-)
-
-split_name = st.sidebar.radio(
-    "Split",
-    ["test", "train"],
-    horizontal=True,
-)
-
-plot_mode = st.sidebar.radio(
-    "Plot mode",
-    ["All points", "Experiment signals"],
-    horizontal=True,
-)
-
-experiment_id_key = (
-    "test_experiment_ids"
-    if split_name == "test"
-    else "train_experiment_ids"
-)
-
-selected_experiment_ids = sorted(
-    {
-        experiment_id
-        for split_config in splits_by_target.values()
-        for experiment_id in split_config[experiment_id_key]
-    }
-)
-
-split_df = geometry_df[
-    geometry_df["Experiment_ID"].isin(
-        selected_experiment_ids
-    )
-].copy()
-
-available_groups = sorted(
-    split_df["Group_ID"]
-    .dropna()
-    .astype(int)
-    .unique()
-    .tolist()
-)
-
-if not available_groups:
-    st.warning(
-        f"No groups found in the `{split_name}` split."
-    )
-    st.stop()
-
-selected_group = st.sidebar.selectbox(
-    "Group number",
-    available_groups,
-    format_func=format_group,
-)
-
-st.caption(
-    f"Showing `{geometry_source}` for `{split_name}` {format_group(selected_group)}."
-)
-
-selected_split_df = split_df[
-    split_df["Group_ID"].astype(int) == int(selected_group)
-].copy()
-
-if split_name == "test":
-    prediction_df = load_test_predictions_from_artifacts(
+    artifact_dir = find_qrf_artifact_dir(
         geometry_source=geometry_source,
-        splits_by_target=splits_by_target,
-    )
-else:
-    prediction_df = predict_split_group(
-        selected_split_df,
-        geometry_source,
-        splits_by_target,
+        axis=axis,
+        split_index=split_config["split_index"],
     )
 
-prediction_df = prediction_df[
-    (prediction_df["Group_ID"].astype("Int64") == int(selected_group))
-    & (prediction_df["angle"] >= 0)
-    & (prediction_df["angle"] <= 44)
-].copy()
+    predictions_path = (
+        artifact_dir
+        / "test_predictions.parquet"
+    )
 
-if prediction_df.empty:
-    st.warning(f"No prediction rows found for {format_group(selected_group)}.")
-    st.stop()
+    if not predictions_path.exists():
+        predictions_path = (
+            artifact_dir
+            / "test_predictions.csv"
+        )
 
-targets = [
-    "Main-axis [mm]",
-    "Secondary-axis [mm]",
-]
+    if not predictions_path.exists():
+        raise FileNotFoundError(
+            "Missing QRF test predictions in artifact: "
+            f"{artifact_dir}"
+        )
+
+    raw_predictions = load_qrf_test_predictions(
+        str(predictions_path),
+        predictions_path.stat().st_mtime,
+    )
+
+    return format_prediction_frame(
+        prediction_df=raw_predictions,
+        target_name=target_name,
+    )
+
+
+def predict_target_group(
+    split_df: pd.DataFrame,
+    geometry_source: str,
+    target_name: str,
+    split_config: dict,
+) -> pd.DataFrame:
+    axis = target_axis(target_name)
+
+    artifact = load_qrf_artifact(
+        geometry_source=geometry_source,
+        axis=axis,
+        split_index=split_config["split_index"],
+    )
+
+    model = artifact["model"]
+    metadata = artifact["metadata"]
+    feature_columns = metadata["feature_columns"]
+    model_config = metadata.get(
+        "model_config",
+        {},
+    )
+
+    lower_quantile = float(
+        model_config.get(
+            "lower_quantile",
+            0.05,
+        )
+    )
+    upper_quantile = float(
+        model_config.get(
+            "upper_quantile",
+            0.95,
+        )
+    )
+
+    target_column = TARGETS_BY_AXIS[axis]
+    angle_column = (
+        "Angle[degree]ORDistance[mm]"
+    )
+
+    X = split_df[feature_columns]
+
+    return pd.DataFrame(
+        {
+            "angle": split_df[
+                angle_column
+            ].to_numpy(),
+            "y_true": split_df[
+                target_column
+            ].to_numpy(),
+            "y_pred_mean": np.asarray(
+                model.predict(
+                    X,
+                    quantiles=0.50,
+                )
+            ).ravel(),
+            "y_pred_lower": np.asarray(
+                model.predict(
+                    X,
+                    quantiles=lower_quantile,
+                )
+            ).ravel(),
+            "y_pred_upper": np.asarray(
+                model.predict(
+                    X,
+                    quantiles=upper_quantile,
+                )
+            ).ravel(),
+            "target": target_name,
+            "Group_ID": split_df[
+                "Group_ID"
+            ].to_numpy(),
+            "Experiment_ID": split_df[
+                "Experiment_ID"
+            ].to_numpy(),
+        }
+    )
 
 
 class QRFVisualizer:
@@ -742,7 +881,7 @@ class QRFVisualizer:
         )
         return grouped, target_predictions
 
-    def plot_target(self, target_name):
+    def plot_target(self, target_name, y_limits=None):
         df, raw_target_df = self.prepare_data(target_name)
 
         if df.empty:
@@ -884,6 +1023,9 @@ class QRFVisualizer:
         ax.spines["right"].set_visible(False)
         ax.grid(alpha=0.2)
 
+        if y_limits is not None:
+            ax.set_ylim(*y_limits)
+
         legend_elements = [
             Line2D([0], [0], color="#4C72B0", lw=10, alpha=0.22, label="Prediction Interval"),
             Line2D([0], [0], color="#FF8C00", lw=self.prediction_linewidth, label="Prediction Median"),
@@ -936,12 +1078,341 @@ class QRFVisualizer:
         c5.metric("Abs Bias", f"{metrics['abs_bias']:.3f}")
 
 
-visualizer = QRFVisualizer(
-    prediction_df=prediction_df,
-    angle_col="angle",
-    plot_mode=plot_mode,
+ZOOM_OUT_Y_LIMITS = (
+    20.8,
+    23.0,
 )
 
-for target in targets:
-    st.subheader(target)
-    visualizer.plot_target(target)
+
+
+# ============================================================
+# Shared data
+# ============================================================
+
+geometry_sources = qrf_training_geometry_sources(
+    project_root
+)
+
+if not split_metadata_path.exists():
+    st.error(
+        "Stored split metadata was not found: "
+        f"{split_metadata_path}"
+    )
+    st.stop()
+
+splits_by_target = load_best_splits_by_target(
+    str(split_metadata_path),
+    split_metadata_path.stat().st_mtime,
+)
+
+
+if not bending_setup_catalog_path.exists():
+    st.error(
+        "Bending setup catalog was not found: "
+        f"{bending_setup_catalog_path}"
+    )
+    st.stop()
+
+bending_setup_df = load_bending_setup_catalog(
+    str(bending_setup_catalog_path),
+    bending_setup_catalog_path.stat().st_mtime,
+)
+
+def reset_axis_group_selection(
+    group_widget_key: str,
+) -> None:
+    """
+    Clear the selected group when dataset or split membership changes.
+    """
+    st.session_state.pop(
+        group_widget_key,
+        None,
+    )
+
+
+def render_axis_section(
+    *,
+    target_name: str,
+    section_title: str,
+    key_prefix: str,
+    bending_setup_df: pd.DataFrame,
+) -> dict | None:
+    """
+    Render one fully independent UI section for one target axis.
+    """
+    split_config = splits_by_target[
+        target_name
+    ]
+
+    axis = split_config["axis"]
+
+    st.markdown("---")
+    st.header(section_title)
+
+    st.caption(
+        f"Independent rank-1 split for `{axis}`: "
+        f"split {split_config['split_index']} — "
+        f"`{split_config['split_name']}` "
+        f"(score={split_config['qrf_score']:.6f})"
+    )
+
+    dataset_widget_key = (
+        f"qrf_{key_prefix}_dataset"
+    )
+    split_widget_key = (
+        f"qrf_{key_prefix}_split_membership"
+    )
+    plot_widget_key = (
+        f"qrf_{key_prefix}_plot_mode"
+    )
+    scaling_widget_key = (
+        f"qrf_{key_prefix}_scaling"
+    )
+
+    control_col_1, control_col_2 = st.columns(2)
+
+    with control_col_1:
+        geometry_source = st.selectbox(
+            f"{section_title} dataset",
+            list(geometry_sources),
+            format_func=dataset_label,
+            key=dataset_widget_key,
+        )
+
+        split_name = st.radio(
+            f"{section_title} split membership",
+            ["test", "train"],
+            horizontal=True,
+            key=split_widget_key,
+        )
+
+    with control_col_2:
+        plot_mode = st.radio(
+            f"{section_title} plot mode",
+            [
+                "All points",
+                "Experiment signals",
+            ],
+            horizontal=True,
+            key=plot_widget_key,
+        )
+
+        scaling = st.radio(
+            f"{section_title} scaling",
+            [
+                "zoom_in",
+                "zoom_out",
+            ],
+            horizontal=True,
+            key=scaling_widget_key,
+        )
+
+    # Separate selectbox state for each axis and membership.
+    group_widget_key = (
+        f"qrf_{key_prefix}_{split_name}_group_number"
+    )
+
+    geometry_path = geometry_sources[
+        geometry_source
+    ]
+
+    st.caption(
+        "Using "
+        f"`{geometry_path.relative_to(project_root)}`."
+    )
+
+    if not geometry_path.exists():
+        st.warning(
+            "Missing geometry source file for "
+            f"`{geometry_source}`."
+        )
+        return
+
+    geometry_df = load_preprocessed_geometry(
+        str(geometry_path),
+        geometry_path.stat().st_mtime,
+    )
+
+    group_id_key = (
+        "test_group_ids"
+        if split_name == "test"
+        else "train_group_ids"
+    )
+
+    experiment_id_key = (
+        "test_experiment_ids"
+        if split_name == "test"
+        else "train_experiment_ids"
+    )
+
+    available_groups = sorted(
+        {
+            int(group_id)
+            for group_id
+            in split_config[
+                group_id_key
+            ]
+        }
+    )
+
+    allowed_experiment_ids = sorted(
+        {
+            int(experiment_id)
+            for experiment_id
+            in split_config[
+                experiment_id_key
+            ]
+        }
+    )
+
+    st.caption(
+        f"`{axis}` `{split_name}` membership contains "
+        f"**{len(available_groups)} groups**. "
+        f"Group IDs: {available_groups}"
+    )
+
+    if not available_groups:
+        st.warning(
+            f"No groups are available in the "
+            f"`{split_name}` split for `{target_name}`."
+        )
+        return
+
+    selected_group = st.selectbox(
+        f"{section_title} group number",
+        available_groups,
+        format_func=format_group,
+        key=group_widget_key,
+    )
+
+    selected_setup_df = bending_setup_df[
+        bending_setup_df[
+            "Group_ID"
+        ].eq(int(selected_group))
+    ].copy()
+
+    st.markdown("#### Bending setup")
+
+    if selected_setup_df.empty:
+        st.warning(
+            "No bending setup row was found for "
+            f"{format_group(selected_group)}."
+        )
+    else:
+        st.dataframe(
+            selected_setup_df,
+            use_container_width=True,
+            hide_index=True,
+        )
+
+    selected_split_df = geometry_df[
+        geometry_df[
+            "Group_ID"
+        ]
+        .astype(int)
+        .eq(int(selected_group))
+    ].copy()
+
+    if selected_split_df.empty:
+        st.warning(
+            f"No geometry rows found for "
+            f"{format_group(selected_group)} "
+            f"in the `{split_name}` split."
+        )
+        return
+
+    if split_name == "test":
+        prediction_df = (
+            load_target_test_predictions_from_artifact(
+                geometry_source=geometry_source,
+                target_name=target_name,
+                split_config=split_config,
+            )
+        )
+    else:
+        prediction_df = predict_target_group(
+            split_df=selected_split_df,
+            geometry_source=geometry_source,
+            target_name=target_name,
+            split_config=split_config,
+        )
+
+    prediction_df = prediction_df[
+        (
+            prediction_df[
+                "Group_ID"
+            ].astype("Int64")
+            == int(selected_group)
+        )
+        & prediction_df[
+            "angle"
+        ].between(
+            0,
+            44,
+            inclusive="both",
+        )
+    ].copy()
+
+    if prediction_df.empty:
+        st.warning(
+            f"No prediction rows found for "
+            f"{format_group(selected_group)} "
+            f"in `{target_name}`."
+        )
+        return
+
+    st.caption(
+        f"Showing `{geometry_source}` | "
+        f"`{split_name}` | "
+        f"{format_group(selected_group)} | "
+        f"split_index={split_config['split_index']}."
+    )
+
+    plot_slot = st.empty()
+
+    return {
+        "target_name": target_name,
+        "prediction_df": prediction_df,
+        "plot_mode": plot_mode,
+        "scaling": scaling,
+        "plot_slot": plot_slot,
+    }
+
+
+axis_sections = [
+    render_axis_section(
+        target_name="Main-axis [mm]",
+        section_title="Main Axis",
+        key_prefix="main",
+        bending_setup_df=bending_setup_df,
+    ),
+    render_axis_section(
+        target_name="Secondary-axis [mm]",
+        section_title="Secondary Axis",
+        key_prefix="secondary",
+        bending_setup_df=bending_setup_df,
+    ),
+]
+
+active_axis_sections = [
+    section
+    for section in axis_sections
+    if section is not None
+]
+
+for section in active_axis_sections:
+    with section["plot_slot"].container():
+        visualizer = QRFVisualizer(
+            prediction_df=section["prediction_df"],
+            angle_col="angle",
+            plot_mode=section["plot_mode"],
+        )
+
+        visualizer.plot_target(
+            section["target_name"],
+            y_limits=(
+                ZOOM_OUT_Y_LIMITS
+                if section["scaling"] == "zoom_out"
+                else None
+            ),
+        )

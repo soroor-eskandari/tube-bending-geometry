@@ -1,21 +1,42 @@
-import logging
-import ast
-from pathlib import Path
+from __future__ import annotations
 
+import ast
+import logging
+from pathlib import Path
+from typing import Any
+
+import numpy as np
 import pandas as pd
 
 from src.pipeline.ml.qrf.mode.experiments.qrf_pipeline import (
     run,
 )
 
-logging.basicConfig(level=logging.INFO)
+
+# ============================================================
+# Logging
+# ============================================================
+
+logging.basicConfig(
+    level=logging.INFO,
+    format=(
+        "%(asctime)s | %(levelname)s | "
+        "%(name)s | %(message)s"
+    ),
+)
+
 logger = logging.getLogger(__name__)
 
+
+# ============================================================
+# QRF configuration
+# ============================================================
 
 QRF_FEATURE_COLUMNS = [
     "Group_ID",
     "Angle[degree]ORDistance[mm]",
 ]
+
 
 QRF_EXCLUDED_EXPERIMENTS = [
     1,
@@ -23,26 +44,38 @@ QRF_EXCLUDED_EXPERIMENTS = [
     166,
 ]
 
-STORED_QRF_RANKING_SOURCE = (
-    "sensor_augmented_noise__time_wrapping__scaling__jittering"
-)
 
 BEST_QRF_PARAMS_BY_DATASET = {
     "real": {
-        "n_estimators": 300,
+        "n_estimators": 200,
         "max_depth": 5,
+        "min_samples_leaf": 10,
+        "min_samples_split": 10,
+        "max_features": 0.7,
+        "bootstrap": True,
         "lower_quantile": 0.05,
         "upper_quantile": 0.95,
     },
-    "sensor_augmented_noise__time_wrapping__scaling__jittering": {
-        "n_estimators": 300,
+    (
+        "sensor_augmented_noise__"
+        "time_wrapping__scaling__jittering"
+    ): {
+        "n_estimators": 200,
         "max_depth": 5,
+        "min_samples_leaf": 10,
+        "min_samples_split": 10,
+        "max_features": 0.7,
+        "bootstrap": True,
         "lower_quantile": 0.05,
         "upper_quantile": 0.95,
     },
     "within_group_interpolation_raw": {
-        "n_estimators": 300,
+        "n_estimators": 200,
         "max_depth": 5,
+        "min_samples_leaf": 10,
+        "min_samples_split": 10,
+        "max_features": 0.7,
+        "bootstrap": True,
         "lower_quantile": 0.05,
         "upper_quantile": 0.95,
     },
@@ -50,179 +83,153 @@ BEST_QRF_PARAMS_BY_DATASET = {
 
 
 STORED_QRF_SPLIT_PATH = Path(
-    "src/pipeline/ml/qrf/data/various_splits.parquet"
+    "src"
+    "/pipeline"
+    "/ml"
+    "/qrf"
+    "/data"
+    "/various_splits.parquet"
 )
-STORED_QRF_MODEL_DIR = Path("src/pipeline/ml/qrf/result/models")
 
 
-def load_top_qrf_splits_by_axis(
+STORED_QRF_MODEL_DIR = Path(
+    "src"
+    "/pipeline"
+    "/ml"
+    "/qrf"
+    "/result"
+    "/models"
+)
+
+
+BENDING_SETUPS_PATH = Path(
+    "data"
+    "/rf_augmented"
+    "/ui_data"
+    "/unique_bending_setups.csv"
+)
+
+
+# ============================================================
+# Generic helpers
+# ============================================================
+
+def _resolve_project_path(
     project_root: Path,
-    ranking_source: str,
-) -> dict[str, dict]:
+    path: str | Path,
+) -> Path:
     """
-    Load the independently ranked Top-1 split for the main and
-    secondary axes of one geometry source.
+    Resolve a project-relative or absolute path.
     """
-    split_path = (
-        project_root
-        / STORED_QRF_SPLIT_PATH
-    ).resolve()
+    resolved_path = Path(path)
 
-    if not split_path.exists():
-        raise FileNotFoundError(
-            f"Stored QRF split file was not found: "
-            f"{split_path}"
+    if not resolved_path.is_absolute():
+        resolved_path = (
+            project_root
+            / resolved_path
         )
 
-    required_columns = [
-        "split_index",
-        "geometry_source",
-        "split_name",
-        "train_experiment_ids",
-        "test_experiment_ids",
-        "qrf_rank_main",
-        "qrf_score_main",
-        "qrf_rank_secondary",
-        "qrf_score_secondary",
-    ]
-
-    split_df = pd.read_parquet(
-        split_path,
-        columns=required_columns,
-    )
-
-    source_df = split_df[
-        split_df["geometry_source"].eq(
-            ranking_source
-        )
-    ].copy()
-
-    if source_df.empty:
-        available_sources = sorted(
-            split_df["geometry_source"]
-            .dropna()
-            .astype(str)
-            .unique()
-            .tolist()
-        )
-
-        raise ValueError(
-            "No stored QRF ranking was found for "
-            f"geometry_source={ranking_source!r}. "
-            f"Available sources: {available_sources}"
-        )
-
-    # The parquet has multiple prediction rows for each split.
-    split_catalog_df = (
-        source_df
-        .drop_duplicates(
-            subset=["split_index"]
-        )
-        .reset_index(drop=True)
-    )
-
-    axis_columns = {
-        "main": {
-            "rank": "qrf_rank_main",
-            "score": "qrf_score_main",
-            "target": "Main-axis [mm]",
-        },
-        "secondary": {
-            "rank": "qrf_rank_secondary",
-            "score": "qrf_score_secondary",
-            "target": "Secondary-axis [mm]",
-        },
-    }
-
-    selected: dict[str, dict] = {}
-
-    for axis, columns in axis_columns.items():
-        rank_column = columns["rank"]
-        score_column = columns["score"]
-
-        ranked_df = split_catalog_df.dropna(
-            subset=[rank_column]
-        ).copy()
-
-        ranked_df[rank_column] = pd.to_numeric(
-            ranked_df[rank_column],
-            errors="raise",
-        ).astype(int)
-
-        top_df = ranked_df[
-            ranked_df[rank_column].eq(1)
-        ].copy()
-
-        if top_df.empty:
-            raise ValueError(
-                f"No Top-1 QRF split was found for "
-                f"source={ranking_source!r}, "
-                f"axis={axis!r}."
-            )
-
-        unique_top_df = top_df.drop_duplicates(
-            subset=["split_index"]
-        )
-
-        if len(unique_top_df) != 1:
-            raise ValueError(
-                f"Expected exactly one Top-1 split for "
-                f"source={ranking_source!r}, "
-                f"axis={axis!r}, but found "
-                f"{len(unique_top_df)}: "
-                f"{unique_top_df['split_index'].tolist()}"
-            )
-
-        row = unique_top_df.iloc[0]
-
-        selected[axis] = {
-            "axis": axis,
-            "target_column": columns["target"],
-            "split_index": int(
-                row["split_index"]
-            ),
-            "split_name": str(
-                row["split_name"]
-            ),
-            "qrf_rank": int(
-                row[rank_column]
-            ),
-            "qrf_score": float(
-                row[score_column]
-            ),
-            "train_exp": (
-                _normalize_stored_experiment_ids(
-                    row["train_experiment_ids"]
-                )
-            ),
-            "test_exp": (
-                _normalize_stored_experiment_ids(
-                    row["test_experiment_ids"]
-                )
-            ),
-        }
-
-    return selected
+    return resolved_path.resolve()
 
 
-def _normalize_stored_experiment_ids(value) -> list[int]:
+def _normalize_stored_experiment_ids(
+    value: Any,
+) -> list[int]:
+    """
+    Convert stored experiment IDs to a sorted unique integer list.
+
+    Supported input formats include:
+      - Python list;
+      - tuple;
+      - set;
+      - NumPy array;
+      - Pandas Series;
+      - string representation of a list.
+    """
     if isinstance(value, str):
-        value = ast.literal_eval(value)
+        stripped_value = value.strip()
 
-    return sorted(set(map(int, value)))
+        if not stripped_value:
+            return []
 
+        value = ast.literal_eval(
+            stripped_value
+        )
+
+    if isinstance(value, np.ndarray):
+        value = value.tolist()
+
+    if isinstance(value, pd.Series):
+        value = value.tolist()
+
+    if not isinstance(
+        value,
+        (
+            list,
+            tuple,
+            set,
+        ),
+    ):
+        if pd.isna(value):
+            return []
+
+        value = [value]
+
+    normalized_ids = sorted(
+        {
+            int(experiment_id)
+            for experiment_id in value
+            if pd.notna(experiment_id)
+        }
+    )
+
+    return normalized_ids
+
+
+def _validate_required_columns(
+    dataframe: pd.DataFrame,
+    required_columns: set[str],
+    dataframe_name: str,
+) -> None:
+    """
+    Validate required DataFrame columns.
+    """
+    missing_columns = (
+        required_columns.difference(
+            dataframe.columns
+        )
+    )
+
+    if missing_columns:
+        raise KeyError(
+            f"{dataframe_name} is missing columns: "
+            f"{sorted(missing_columns)}. "
+            f"Available columns: "
+            f"{dataframe.columns.tolist()}"
+        )
+
+
+# ============================================================
+# Geometry sources
+# ============================================================
 
 def qrf_training_geometry_sources(
     project_root: Path,
 ) -> dict[str, Path]:
-    return {
+    """
+    Return all geometry sources used for final QRF training.
+    """
+    source_paths = {
         "real": (
             project_root
             / "data"
             / "processed"
             / "geometry.csv"
         ),
-        "sensor_augmented_noise__time_wrapping__scaling__jittering": (
+        (
+            "sensor_augmented_noise__"
+            "time_wrapping__scaling__jittering"
+        ): (
             project_root
             / "data"
             / "rf_augmented"
@@ -244,104 +251,755 @@ def qrf_training_geometry_sources(
         ),
     }
 
+    return {
+        source_name: source_path.resolve()
+        for source_name, source_path
+        in source_paths.items()
+    }
 
-if __name__ == "__main__":
+
+def validate_geometry_sources(
+    geometry_sources: dict[str, Path],
+) -> None:
+    """
+    Validate that all configured geometry source files exist.
+    """
+    if not geometry_sources:
+        raise ValueError(
+            "No QRF geometry sources were configured."
+        )
+
+    missing_sources = {
+        source_name: source_path
+        for source_name, source_path
+        in geometry_sources.items()
+        if not source_path.exists()
+    }
+
+    if missing_sources:
+        formatted_missing_sources = "\n".join(
+            (
+                f"  - {source_name}: "
+                f"{source_path}"
+            )
+            for source_name, source_path
+            in missing_sources.items()
+        )
+
+        raise FileNotFoundError(
+            "Some QRF geometry sources were not found:\n"
+            f"{formatted_missing_sources}"
+        )
+
+
+# ============================================================
+# Load independent Top-1 splits
+# ============================================================
+
+def load_top_qrf_splits_by_axis(
+    project_root: Path,
+) -> dict[str, dict]:
+    """
+    Load the independent Top-1 split for each target axis.
+
+    Selection policy
+    ----------------
+    Main model:
+        Select the unique row where qrf_rank_main == 1.
+
+    Secondary model:
+        Select the unique row where qrf_rank_secondary == 1.
+
+    The stored rankings are shared across every geometry source.
+    Therefore, various_splits.parquet does not need a
+    geometry_source column.
+    """
+    split_path = _resolve_project_path(
+        project_root=project_root,
+        path=STORED_QRF_SPLIT_PATH,
+    )
+
+    if not split_path.exists():
+        raise FileNotFoundError(
+            "Stored QRF split metadata was not found: "
+            f"{split_path}"
+        )
+
+    required_columns = {
+        "split_index",
+        "split_name",
+        "train_experiment_ids",
+        "test_experiment_ids",
+        "qrf_rank_main",
+        "qrf_score_main",
+        "qrf_rank_secondary",
+        "qrf_score_secondary",
+    }
+
+    split_df = pd.read_parquet(
+        split_path,
+        columns=sorted(
+            required_columns
+        ),
+    )
+
+    if split_df.empty:
+        raise ValueError(
+            "Stored QRF split metadata is empty: "
+            f"{split_path}"
+        )
+
+    _validate_required_columns(
+        dataframe=split_df,
+        required_columns=required_columns,
+        dataframe_name=(
+            "Stored QRF split metadata"
+        ),
+    )
+
+    split_df["split_index"] = (
+        pd.to_numeric(
+            split_df["split_index"],
+            errors="raise",
+        )
+        .astype(int)
+    )
+
+    if split_df[
+        "split_index"
+    ].duplicated().any():
+        duplicated_indices = sorted(
+            split_df.loc[
+                split_df[
+                    "split_index"
+                ].duplicated(
+                    keep=False
+                ),
+                "split_index",
+            ]
+            .unique()
+            .tolist()
+        )
+
+        raise ValueError(
+            "various_splits.parquet must contain "
+            "exactly one row per split_index. "
+            f"Duplicated split indices: "
+            f"{duplicated_indices}"
+        )
+
+    axis_configuration = {
+        "main": {
+            "rank_column": (
+                "qrf_rank_main"
+            ),
+            "score_column": (
+                "qrf_score_main"
+            ),
+            "target_column": (
+                "Main-axis [mm]"
+            ),
+        },
+        "secondary": {
+            "rank_column": (
+                "qrf_rank_secondary"
+            ),
+            "score_column": (
+                "qrf_score_secondary"
+            ),
+            "target_column": (
+                "Secondary-axis [mm]"
+            ),
+        },
+    }
+
+    selected_splits: dict[
+        str,
+        dict,
+    ] = {}
+
+    for (
+        axis,
+        axis_config,
+    ) in axis_configuration.items():
+        rank_column = (
+            axis_config[
+                "rank_column"
+            ]
+        )
+
+        score_column = (
+            axis_config[
+                "score_column"
+            ]
+        )
+
+        axis_df = split_df.dropna(
+            subset=[
+                rank_column,
+                score_column,
+            ]
+        ).copy()
+
+        if axis_df.empty:
+            raise ValueError(
+                "No ranked QRF splits are available "
+                f"for axis={axis!r}. "
+                "Run run_qrf_split_ranking.py first."
+            )
+
+        axis_df[rank_column] = (
+            pd.to_numeric(
+                axis_df[
+                    rank_column
+                ],
+                errors="raise",
+            )
+            .astype(int)
+        )
+
+        axis_df[score_column] = (
+            pd.to_numeric(
+                axis_df[
+                    score_column
+                ],
+                errors="raise",
+            )
+            .astype(float)
+        )
+
+        rank_one_df = (
+            axis_df.loc[
+                axis_df[
+                    rank_column
+                ].eq(1)
+            ]
+            .copy()
+            .reset_index(drop=True)
+        )
+
+        if len(rank_one_df) != 1:
+            rank_one_indices = (
+                rank_one_df[
+                    "split_index"
+                ]
+                .astype(int)
+                .tolist()
+            )
+
+            raise ValueError(
+                "Expected exactly one rank-1 QRF "
+                f"split for axis={axis!r}, but "
+                f"found {len(rank_one_df)}. "
+                f"Split indices: "
+                f"{rank_one_indices}"
+            )
+
+        row = rank_one_df.iloc[0]
+
+        train_experiment_ids = (
+            _normalize_stored_experiment_ids(
+                row[
+                    "train_experiment_ids"
+                ]
+            )
+        )
+
+        test_experiment_ids = (
+            _normalize_stored_experiment_ids(
+                row[
+                    "test_experiment_ids"
+                ]
+            )
+        )
+
+        if not train_experiment_ids:
+            raise ValueError(
+                "Rank-1 split has no training "
+                f"experiments for axis={axis!r}."
+            )
+
+        if not test_experiment_ids:
+            raise ValueError(
+                "Rank-1 split has no test "
+                f"experiments for axis={axis!r}."
+            )
+
+        experiment_overlap = set(
+            train_experiment_ids
+        ).intersection(
+            test_experiment_ids
+        )
+
+        if experiment_overlap:
+            raise ValueError(
+                "Experiment leakage was found in "
+                f"the rank-1 {axis} split. "
+                f"Overlapping experiment IDs: "
+                f"{sorted(experiment_overlap)}"
+            )
+
+        selected_splits[axis] = {
+            "axis": axis,
+            "target_column": (
+                axis_config[
+                    "target_column"
+                ]
+            ),
+            "split_index": int(
+                row["split_index"]
+            ),
+            "split_name": str(
+                row["split_name"]
+            ),
+            "qrf_rank": int(
+                row[rank_column]
+            ),
+            "qrf_score": float(
+                row[score_column]
+            ),
+            "train_exp": (
+                train_experiment_ids
+            ),
+            "test_exp": (
+                test_experiment_ids
+            ),
+        }
+
+    if set(
+        selected_splits
+    ) != {
+        "main",
+        "secondary",
+    }:
+        raise RuntimeError(
+            "Top-1 split selection did not return "
+            "both main and secondary axes."
+        )
+
+    return selected_splits
+
+
+# ============================================================
+# Prepare source-specific split configuration
+# ============================================================
+
+def build_splits_by_source(
+    geometry_sources: dict[str, Path],
+    top_splits_by_axis: dict[str, dict],
+) -> dict[str, dict[str, dict]]:
+    """
+    Reuse the independent Top-1 main and secondary splits for every
+    geometry source.
+
+    A new dictionary is created for each source and axis so later
+    modifications cannot unintentionally affect another source.
+    """
+    required_axes = {
+        "main",
+        "secondary",
+    }
+
+    missing_axes = (
+        required_axes.difference(
+            top_splits_by_axis
+        )
+    )
+
+    if missing_axes:
+        raise KeyError(
+            "Top split configuration is missing axes: "
+            f"{sorted(missing_axes)}"
+        )
+
+    splits_by_source: dict[
+        str,
+        dict[str, dict],
+    ] = {}
+
+    for geometry_source in (
+        geometry_sources
+    ):
+        splits_by_source[
+            geometry_source
+        ] = {
+            "main": {
+                key: (
+                    list(value)
+                    if isinstance(
+                        value,
+                        list,
+                    )
+                    else value
+                )
+                for key, value
+                in top_splits_by_axis[
+                    "main"
+                ].items()
+            },
+            "secondary": {
+                key: (
+                    list(value)
+                    if isinstance(
+                        value,
+                        list,
+                    )
+                    else value
+                )
+                for key, value
+                in top_splits_by_axis[
+                    "secondary"
+                ].items()
+            },
+        }
+
+    return splits_by_source
+
+
+# ============================================================
+# Model parameter validation
+# ============================================================
+
+def validate_model_parameters(
+    geometry_sources: dict[str, Path],
+    model_params_by_source: dict[
+        str,
+        dict,
+    ],
+) -> None:
+    """
+    Validate that every geometry source has QRF model parameters.
+    """
+    missing_sources = set(
+        geometry_sources
+    ).difference(
+        model_params_by_source
+    )
+
+    if missing_sources:
+        raise KeyError(
+            "QRF model parameters are missing for "
+            f"geometry sources: "
+            f"{sorted(missing_sources)}"
+        )
+
+    required_model_parameters = {
+        "n_estimators",
+        "max_depth",
+        "min_samples_leaf",
+        "min_samples_split",
+        "max_features",
+        "bootstrap",
+        "lower_quantile",
+        "upper_quantile",
+    }
+
+    for (
+        geometry_source,
+        model_parameters,
+    ) in model_params_by_source.items():
+        missing_parameters = (
+            required_model_parameters.difference(
+                model_parameters
+            )
+        )
+
+        if missing_parameters:
+            raise KeyError(
+                "Model parameters are missing for "
+                f"geometry_source="
+                f"{geometry_source!r}: "
+                f"{sorted(missing_parameters)}"
+            )
+
+
+# ============================================================
+# Main execution
+# ============================================================
+
+def main() -> None:
     project_root = Path(
         __file__
     ).resolve().parent
 
-    use_best_qrf_params = True
+    logger.info(
+        "Project root: %s",
+        project_root,
+    )
 
     geometry_sources = (
         qrf_training_geometry_sources(
-            project_root
+            project_root=project_root,
         )
+    )
+
+    validate_geometry_sources(
+        geometry_sources
     )
 
     logger.info(
         "Available geometry sources: %s",
-        sorted(geometry_sources),
+        sorted(
+            geometry_sources
+        ),
     )
 
-    shared_top_splits_by_axis = (
+    top_splits_by_axis = (
         load_top_qrf_splits_by_axis(
             project_root=project_root,
-            ranking_source=(
-                STORED_QRF_RANKING_SOURCE
+        )
+    )
+
+    for (
+        axis,
+        split_config,
+    ) in top_splits_by_axis.items():
+        logger.info(
+            "Selected independent Top-1 split | "
+            "axis=%s | "
+            "split_index=%s | "
+            "rank=%s | "
+            "score=%.6f | "
+            "train_experiments=%s | "
+            "test_experiments=%s | "
+            "split=%s",
+            axis,
+            split_config[
+                "split_index"
+            ],
+            split_config[
+                "qrf_rank"
+            ],
+            split_config[
+                "qrf_score"
+            ],
+            len(
+                split_config[
+                    "train_exp"
+                ]
+            ),
+            len(
+                split_config[
+                    "test_exp"
+                ]
+            ),
+            split_config[
+                "split_name"
+            ],
+        )
+
+    if (
+        top_splits_by_axis[
+            "main"
+        ][
+            "split_index"
+        ]
+        == top_splits_by_axis[
+            "secondary"
+        ][
+            "split_index"
+        ]
+    ):
+        logger.info(
+            "Main and secondary independently selected "
+            "the same rank-1 split_index=%s.",
+            top_splits_by_axis[
+                "main"
+            ][
+                "split_index"
+            ],
+        )
+    else:
+        logger.info(
+            "Independent rank-1 splits selected | "
+            "main split_index=%s | "
+            "secondary split_index=%s",
+            top_splits_by_axis[
+                "main"
+            ][
+                "split_index"
+            ],
+            top_splits_by_axis[
+                "secondary"
+            ][
+                "split_index"
+            ],
+        )
+
+    selected_splits_by_source = (
+        build_splits_by_source(
+            geometry_sources=(
+                geometry_sources
+            ),
+            top_splits_by_axis=(
+                top_splits_by_axis
             ),
         )
     )
 
-    for axis, split_config in (
-        shared_top_splits_by_axis.items()
-    ):
-        logger.info(
-            "Selected shared Top-1 split | "
-            "ranking_source=%s | axis=%s | "
-            "split_index=%s | score=%.6f | "
-            "train_experiments=%s | "
-            "test_experiments=%s | "
-            "split=%s",
-            STORED_QRF_RANKING_SOURCE,
-            axis,
-            split_config["split_index"],
-            split_config["qrf_score"],
-            len(split_config["train_exp"]),
-            len(split_config["test_exp"]),
-            split_config["split_name"],
+    model_params_by_source = {
+        source_name: dict(
+            BEST_QRF_PARAMS_BY_DATASET[
+                source_name
+            ]
         )
-
-    selected_splits_by_source = {
-        geometry_source: (
-            shared_top_splits_by_axis
-        )
-        for geometry_source in geometry_sources
+        for source_name
+        in geometry_sources
     }
 
-    model_params_by_source = (
-        BEST_QRF_PARAMS_BY_DATASET
+    validate_model_parameters(
+        geometry_sources=(
+            geometry_sources
+        ),
+        model_params_by_source=(
+            model_params_by_source
+        ),
+    )
+
+    model_root = (
+        _resolve_project_path(
+            project_root=project_root,
+            path=STORED_QRF_MODEL_DIR,
+        )
+    )
+
+    bending_setups_path = (
+        _resolve_project_path(
+            project_root=project_root,
+            path=BENDING_SETUPS_PATH,
+        )
+    )
+
+    if not bending_setups_path.exists():
+        raise FileNotFoundError(
+            "Bending setups file was not found: "
+            f"{bending_setups_path}"
+        )
+
+    logger.info(
+        "Starting final QRF model training."
+    )
+
+    logger.info(
+        "Main axis uses split_index=%s "
+        "for every geometry source.",
+        top_splits_by_axis[
+            "main"
+        ][
+            "split_index"
+        ],
+    )
+
+    logger.info(
+        "Secondary axis uses split_index=%s "
+        "for every geometry source.",
+        top_splits_by_axis[
+            "secondary"
+        ][
+            "split_index"
+        ],
     )
 
     results = run(
         project_root=project_root,
-        geometry_sources=geometry_sources,
+        geometry_sources=(
+            geometry_sources
+        ),
         splits_by_source=(
             selected_splits_by_source
         ),
-        feature_columns=(
+        feature_columns=list(
             QRF_FEATURE_COLUMNS
         ),
-        excluded_experiments=(
+        excluded_experiments=list(
             QRF_EXCLUDED_EXPERIMENTS
         ),
         model_params_by_source=(
             model_params_by_source
         ),
-        model_root=(
-            project_root
-            / STORED_QRF_MODEL_DIR
-        ),
+        model_root=model_root,
         bending_setups_path=(
-            project_root
-            / "data"
-            / "rf_augmented"
-            / "ui_data"
-            / "unique_bending_setups.csv"
+            bending_setups_path
         ),
     )
 
-    for geometry_source, source_results in (
-        results.items()
-    ):
-        for target_axis, result in (
-            source_results.items()
-        ):
+    expected_sources = set(
+        geometry_sources
+    )
+
+    actual_sources = set(
+        results
+    )
+
+    if actual_sources != expected_sources:
+        raise RuntimeError(
+            "Final QRF results do not contain all "
+            "configured geometry sources. "
+            f"Expected: {sorted(expected_sources)}; "
+            f"received: {sorted(actual_sources)}"
+        )
+
+    for (
+        geometry_source,
+        source_results,
+    ) in results.items():
+        expected_axes = {
+            "main",
+            "secondary",
+        }
+
+        actual_axes = set(
+            source_results
+        )
+
+        if actual_axes != expected_axes:
+            raise RuntimeError(
+                "Final QRF results do not contain "
+                "both axes for "
+                f"geometry_source="
+                f"{geometry_source!r}. "
+                f"Received axes: "
+                f"{sorted(actual_axes)}"
+            )
+
+        for (
+            target_axis,
+            result,
+        ) in source_results.items():
+            selected_split = (
+                top_splits_by_axis[
+                    target_axis
+                ]
+            )
+
             logger.info(
-                "Stored model | "
-                "source=%s | axis=%s | "
-                "model=%s | metrics=%s",
+                "Stored final model | "
+                "source=%s | "
+                "axis=%s | "
+                "split_index=%s | "
+                "rank=%s | "
+                "model=%s | "
+                "metrics=%s",
                 geometry_source,
                 target_axis,
-                result["model_path"],
-                result["metrics"],
+                selected_split[
+                    "split_index"
+                ],
+                selected_split[
+                    "qrf_rank"
+                ],
+                result[
+                    "model_path"
+                ],
+                result[
+                    "metrics"
+                ],
             )
+
+    logger.info(
+        "Final QRF training completed successfully."
+    )
+
+
+if __name__ == "__main__":
+    main()

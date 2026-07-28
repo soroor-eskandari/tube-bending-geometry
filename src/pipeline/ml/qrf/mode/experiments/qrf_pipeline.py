@@ -609,13 +609,15 @@ def _train_and_store_single_qrf_model(
     )
 
     if artifact_dir.exists():
-        timestamp = datetime.now().strftime(
-            "%Y%m%d_%H%M%S"
-        )
+        shutil.rmtree(artifact_dir)
 
-        artifact_dir = artifact_dir.with_name(
-            f"{artifact_dir.name}__{timestamp}"
+    for previous_artifact_dir in (
+        artifact_dir.parent.glob(
+            f"{artifact_name}__*"
         )
+    ):
+        if previous_artifact_dir.is_dir():
+            shutil.rmtree(previous_artifact_dir)
 
     artifact_dir.mkdir(
         parents=True,

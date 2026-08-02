@@ -551,6 +551,34 @@ def load_qrf_model(model_path: str, model_mtime: float):
     return joblib.load(model_path)
 
 
+def qrf_predict_original_scale(
+    model,
+    X: pd.DataFrame,
+    experiment_ids: pd.Series | np.ndarray,
+    quantile: float,
+) -> np.ndarray:
+    predictions = np.asarray(
+        model.predict(
+            X,
+            quantiles=quantile,
+        )
+    ).ravel()
+
+    target_normalizer = getattr(
+        model,
+        "group_wise_target_normalizer_",
+        None,
+    )
+
+    if target_normalizer is None:
+        return predictions
+
+    return target_normalizer.inverse_transform_values(
+        predictions,
+        experiment_ids,
+    )
+
+
 @st.cache_data
 def load_qrf_test_predictions(
     predictions_path: str,
@@ -687,18 +715,30 @@ def predict_split_group(
             model_config.get("upper_quantile", 0.95)
         )
         X = split_df[feature_columns]
+        experiment_ids = split_df["Experiment_ID"]
 
         return pd.DataFrame(
             {
                 "angle": split_df[angle_col].to_numpy(),
                 "y_true": split_df[target_col].to_numpy(),
-                "y_pred_mean": np.asarray(model.predict(X, quantiles=0.50)).ravel(),
-                "y_pred_lower": np.asarray(
-                    model.predict(X, quantiles=lower_quantile)
-                ).ravel(),
-                "y_pred_upper": np.asarray(
-                    model.predict(X, quantiles=upper_quantile)
-                ).ravel(),
+                "y_pred_mean": qrf_predict_original_scale(
+                    model,
+                    X,
+                    experiment_ids,
+                    0.50,
+                ),
+                "y_pred_lower": qrf_predict_original_scale(
+                    model,
+                    X,
+                    experiment_ids,
+                    lower_quantile,
+                ),
+                "y_pred_upper": qrf_predict_original_scale(
+                    model,
+                    X,
+                    experiment_ids,
+                    upper_quantile,
+                ),
                 "target": target_name,
                 "Group_ID": split_df["Group_ID"].to_numpy(),
                 "Experiment_ID": split_df["Experiment_ID"].to_numpy(),
@@ -805,6 +845,9 @@ def predict_target_group(
     )
 
     X = split_df[feature_columns]
+    experiment_ids = split_df[
+        "Experiment_ID"
+    ]
 
     return pd.DataFrame(
         {
@@ -814,24 +857,24 @@ def predict_target_group(
             "y_true": split_df[
                 target_column
             ].to_numpy(),
-            "y_pred_mean": np.asarray(
-                model.predict(
-                    X,
-                    quantiles=0.50,
-                )
-            ).ravel(),
-            "y_pred_lower": np.asarray(
-                model.predict(
-                    X,
-                    quantiles=lower_quantile,
-                )
-            ).ravel(),
-            "y_pred_upper": np.asarray(
-                model.predict(
-                    X,
-                    quantiles=upper_quantile,
-                )
-            ).ravel(),
+            "y_pred_mean": qrf_predict_original_scale(
+                model,
+                X,
+                experiment_ids,
+                0.50,
+            ),
+            "y_pred_lower": qrf_predict_original_scale(
+                model,
+                X,
+                experiment_ids,
+                lower_quantile,
+            ),
+            "y_pred_upper": qrf_predict_original_scale(
+                model,
+                X,
+                experiment_ids,
+                upper_quantile,
+            ),
             "target": target_name,
             "Group_ID": split_df[
                 "Group_ID"

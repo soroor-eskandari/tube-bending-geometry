@@ -45,6 +45,9 @@ QRF_EXCLUDED_EXPERIMENTS = [
 ]
 
 
+IS_BEST_CONFIG = True
+
+
 BEST_QRF_PARAMS_BY_DATASET = {
     "real": {
         "n_estimators": 200,
@@ -89,6 +92,16 @@ STORED_QRF_SPLIT_PATH = Path(
     "/qrf"
     "/data"
     "/various_splits.parquet"
+)
+
+
+STORED_QRF_TUNING_PATH = Path(
+    "src"
+    "/pipeline"
+    "/ml"
+    "/qrf"
+    "/data"
+    "/qrf_hyperparameter_tuning_results.parquet"
 )
 
 
@@ -657,6 +670,179 @@ def build_splits_by_source(
 
 
 # ============================================================
+# Load axis-specific tuned hyperparameters
+# ============================================================
+
+def load_tuned_qrf_params_by_axis(
+    project_root: Path,
+) -> dict[str, dict]:
+    """
+    Load the best tuned QRF parameters for main and secondary axes.
+    """
+    tuning_path = _resolve_project_path(
+        project_root=project_root,
+        path=STORED_QRF_TUNING_PATH,
+    )
+
+    if not tuning_path.exists():
+        raise FileNotFoundError(
+            "QRF hyperparameter tuning result was not found: "
+            f"{tuning_path}. Run HyperParameterTuning first."
+        )
+
+    tuning_df = pd.read_parquet(
+        tuning_path
+    )
+
+    required_columns = {
+        "target_axis",
+        "best_n_estimators",
+        "best_max_depth",
+        "best_min_samples_leaf",
+        "best_min_samples_split",
+        "best_max_features",
+        "best_bootstrap",
+        "best_lower_quantile",
+        "best_upper_quantile",
+    }
+
+    _validate_required_columns(
+        dataframe=tuning_df,
+        required_columns=required_columns,
+        dataframe_name=(
+            "QRF hyperparameter tuning result"
+        ),
+    )
+
+    tuned_params_by_axis: dict[
+        str,
+        dict,
+    ] = {}
+
+    for axis in (
+        "main",
+        "secondary",
+    ):
+        axis_df = tuning_df[
+            tuning_df[
+                "target_axis"
+            ].astype(str).eq(axis)
+        ].copy()
+
+        if axis_df.empty:
+            raise ValueError(
+                "No tuned QRF parameters were found "
+                f"for axis={axis!r} in {tuning_path}."
+            )
+
+        axis_df = axis_df.sort_values(
+            "selection_score"
+            if "selection_score" in axis_df.columns
+            else "target_axis"
+        )
+
+        row = axis_df.iloc[0]
+
+        tuned_params_by_axis[axis] = {
+            "n_estimators": int(
+                row["best_n_estimators"]
+            ),
+            "max_depth": (
+                None
+                if pd.isna(
+                    row["best_max_depth"]
+                )
+                else int(row["best_max_depth"])
+            ),
+            "min_samples_leaf": int(
+                row["best_min_samples_leaf"]
+            ),
+            "min_samples_split": int(
+                row["best_min_samples_split"]
+            ),
+            "max_features": (
+                float(row["best_max_features"])
+                if isinstance(
+                    row["best_max_features"],
+                    (int, float, np.integer, np.floating),
+                )
+                and not isinstance(
+                    row["best_max_features"],
+                    bool,
+                )
+                else row["best_max_features"]
+            ),
+            "bootstrap": bool(
+                row["best_bootstrap"]
+            ),
+            "lower_quantile": float(
+                row["best_lower_quantile"]
+            ),
+            "upper_quantile": float(
+                row["best_upper_quantile"]
+            ),
+        }
+
+    return tuned_params_by_axis
+
+
+def build_model_params_by_source(
+    geometry_sources: dict[str, Path],
+    tuned_params_by_axis: dict[str, dict],
+) -> dict[str, dict[str, dict]]:
+    """
+    Reuse the tuned main/secondary parameters for every geometry source.
+    """
+    return {
+        source_name: {
+            axis: dict(
+                tuned_params_by_axis[axis]
+            )
+            for axis in (
+                "main",
+                "secondary",
+            )
+        }
+        for source_name in geometry_sources
+    }
+
+
+def build_default_model_params_by_source(
+    geometry_sources: dict[str, Path],
+) -> dict[str, dict[str, dict]]:
+    """
+    Use the original hard-coded dataset parameters for both axes.
+    """
+    missing_sources = set(
+        geometry_sources
+    ).difference(
+        BEST_QRF_PARAMS_BY_DATASET
+    )
+
+    if missing_sources:
+        raise KeyError(
+            "Default QRF model parameters are missing for "
+            f"geometry sources: {sorted(missing_sources)}"
+        )
+
+    return {
+        source_name: {
+            "main": dict(
+                BEST_QRF_PARAMS_BY_DATASET[
+                    source_name
+                ]
+            ),
+            "secondary": dict(
+                BEST_QRF_PARAMS_BY_DATASET[
+                    source_name
+                ]
+            ),
+        }
+        for source_name in geometry_sources
+    }
+
+
+# ============================================================
 # Model parameter validation
 # ============================================================
 
@@ -664,7 +850,7 @@ def validate_model_parameters(
     geometry_sources: dict[str, Path],
     model_params_by_source: dict[
         str,
-        dict,
+        dict[str, dict],
     ],
 ) -> None:
     """
@@ -696,21 +882,41 @@ def validate_model_parameters(
 
     for (
         geometry_source,
-        model_parameters,
+        source_model_parameters,
     ) in model_params_by_source.items():
-        missing_parameters = (
-            required_model_parameters.difference(
-                model_parameters
-            )
+        missing_axes = {
+            "main",
+            "secondary",
+        }.difference(
+            source_model_parameters
         )
 
-        if missing_parameters:
+        if missing_axes:
             raise KeyError(
-                "Model parameters are missing for "
-                f"geometry_source="
-                f"{geometry_source!r}: "
-                f"{sorted(missing_parameters)}"
+                "Axis-specific model parameters are "
+                "missing for "
+                f"geometry_source={geometry_source!r}: "
+                f"{sorted(missing_axes)}"
             )
+
+        for (
+            target_axis,
+            model_parameters,
+        ) in source_model_parameters.items():
+            missing_parameters = (
+                required_model_parameters.difference(
+                    model_parameters
+                )
+            )
+
+            if missing_parameters:
+                raise KeyError(
+                    "Model parameters are missing for "
+                    f"geometry_source="
+                    f"{geometry_source!r}, "
+                    f"target_axis={target_axis!r}: "
+                    f"{sorted(missing_parameters)}"
+                )
 
 
 # ============================================================
@@ -837,15 +1043,42 @@ def main() -> None:
         )
     )
 
-    model_params_by_source = {
-        source_name: dict(
-            BEST_QRF_PARAMS_BY_DATASET[
-                source_name
-            ]
+    if IS_BEST_CONFIG:
+        tuned_params_by_axis = (
+            load_tuned_qrf_params_by_axis(
+                project_root=project_root,
+            )
         )
-        for source_name
-        in geometry_sources
-    }
+
+        for (
+            axis,
+            tuned_params,
+        ) in tuned_params_by_axis.items():
+            logger.info(
+                "Loaded tuned QRF params | "
+                "axis=%s | params=%s",
+                axis,
+                tuned_params,
+            )
+
+        model_params_by_source = (
+            build_model_params_by_source(
+                geometry_sources=geometry_sources,
+                tuned_params_by_axis=(
+                    tuned_params_by_axis
+                ),
+            )
+        )
+    else:
+        logger.info(
+            "IS_BEST_CONFIG=False; using default "
+            "hard-coded QRF params."
+        )
+        model_params_by_source = (
+            build_default_model_params_by_source(
+                geometry_sources=geometry_sources,
+            )
+        )
 
     validate_model_parameters(
         geometry_sources=(

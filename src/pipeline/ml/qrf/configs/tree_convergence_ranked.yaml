@@ -1,4 +1,4 @@
-experiment_name: qrf_tree_convergence_ranked
+experiment_name: qrf_single_parameter_trend
 
 paths:
   bending_setups: data/rf_augmented/ui_data/unique_bending_setups.csv
@@ -24,7 +24,10 @@ features:
     main: Main-axis [mm]
     secondary: Secondary-axis [mm]
 
+# These are the fixed/default values.
+# During each experiment, only one selected parameter changes.
 model:
+  n_estimators: 100
   max_depth: 20
   min_samples_leaf: 1
   min_samples_split: 2
@@ -36,8 +39,33 @@ model:
   n_jobs: -1
 
 search:
+  # Only this parameter changes during one notebook execution.
+  varying_parameter: n_estimators
+
+  # Values tested for the selected parameter.
+  parameter_values:
+    - 1
+    - 2
+    - 3
+    - 4
+    - 5
+    - 6
+    - 7
+    - 8
+    - 9
+    - 10
+
+  # run_experiments currently expects this key.
+  # The notebook overwrites it for every individual run.
+  n_estimators:
+    - 100
+
+  axes:
+    - main
+    - secondary
+
   split_selection:
-    mode: ranking
+    mode: ranked
     top_n: 3
     worst_n: 3
 
@@ -45,24 +73,6 @@ search:
       main: qrf_rank_main
       secondary: qrf_rank_secondary
 
-  # This field is populated automatically in usage.ipynb.
-  split_indices: []
-
-  n_estimators:
-    - 10
-    - 20
-    - 30
-    - 40
-    - 50
-    - 60
-    - 70
-    - 80
-    - 90
-    - 100
-
-  axes:
-    - main
-    - secondary
-
 output:
   save_predictions: true
+  save_run_artifacts: false

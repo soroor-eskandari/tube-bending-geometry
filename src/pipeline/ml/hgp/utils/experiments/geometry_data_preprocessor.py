@@ -104,6 +104,15 @@ def attach_group_id(
     if "Group_ID" in geometry_df.columns:
         return geometry_df
 
+    if "group_id" in geometry_df.columns:
+        geometry_df = geometry_df.copy()
+        geometry_df["Group_ID"] = pd.to_numeric(
+            geometry_df["group_id"],
+            errors="raise",
+        ).astype(int)
+
+        return geometry_df
+
     geometry_experiment_column = "Experiment_ID"
     setup_experiment_column = "Experiment_Number"
 
@@ -196,6 +205,152 @@ def attach_group_id(
 
     return geometry_df
 
+
+def merge_group_setup_features(
+    geometry_df: pd.DataFrame,
+    bending_setups_df: pd.DataFrame,
+) -> pd.DataFrame:
+    """
+    Attach bending-setup features to every geometry row by Group_ID.
+
+    Identification columns are not copied as model features. Every retained
+    setup feature must be constant inside each Group_ID. Existing geometry
+    columns with the same names are replaced by the setup-table values to
+    avoid pandas _x/_y suffixes.
+    """
+    group_column = "Group_ID"
+
+    if group_column not in geometry_df.columns:
+        raise KeyError(
+            "Geometry data is missing required column 'Group_ID'."
+        )
+
+    if group_column not in bending_setups_df.columns:
+        raise KeyError(
+            "Bending setup data is missing required column 'Group_ID'."
+        )
+
+    excluded_setup_columns = {
+        group_column,
+        "Experiment_ID",
+        "Experiment_Number",
+        "Tube_numbers",
+    }
+
+    setup_feature_columns = [
+        column
+        for column in bending_setups_df.columns
+        if column not in excluded_setup_columns
+    ]
+
+    if not setup_feature_columns:
+        raise ValueError(
+            "No bending setup feature columns are available for merging."
+        )
+
+    setup_working_df = bending_setups_df[
+        [
+            group_column,
+            *setup_feature_columns,
+        ]
+    ].copy()
+
+    setup_working_df[group_column] = pd.to_numeric(
+        setup_working_df[group_column],
+        errors="raise",
+    ).astype(int)
+
+    geometry_working_df = geometry_df.copy()
+    geometry_working_df[group_column] = pd.to_numeric(
+        geometry_working_df[group_column],
+        errors="raise",
+    ).astype(int)
+
+    feature_unique_counts = (
+        setup_working_df
+        .groupby(
+            group_column,
+            sort=False,
+        )[setup_feature_columns]
+        .nunique(dropna=False)
+    )
+
+    inconsistent_mask = feature_unique_counts.gt(1)
+
+    if inconsistent_mask.any().any():
+        inconsistent_columns = (
+            inconsistent_mask
+            .any(axis=0)
+            .loc[lambda values: values]
+            .index
+            .tolist()
+        )
+
+        inconsistent_groups = sorted(
+            feature_unique_counts.index[
+                inconsistent_mask.any(axis=1)
+            ]
+            .astype(int)
+            .tolist()
+        )
+
+        raise ValueError(
+            "Bending setup features must be constant within each "
+            "Group_ID. "
+            f"Inconsistent columns: {inconsistent_columns}. "
+            f"Affected groups: {inconsistent_groups[:20]}"
+        )
+
+    setup_group_df = (
+        setup_working_df
+        .drop_duplicates(
+            subset=[group_column]
+        )
+        .reset_index(drop=True)
+    )
+
+    # Replace already-existing versions of setup features and prevent
+    # automatic pandas suffixes such as _x and _y.
+    overlapping_columns = [
+        column
+        for column in setup_feature_columns
+        if column in geometry_working_df.columns
+    ]
+
+    if overlapping_columns:
+        geometry_working_df = geometry_working_df.drop(
+            columns=overlapping_columns
+        )
+
+    merged_df = geometry_working_df.merge(
+        setup_group_df,
+        on=group_column,
+        how="left",
+        validate="many_to_one",
+    )
+
+    matched_groups = set(
+        setup_group_df[group_column]
+        .astype(int)
+        .tolist()
+    )
+    geometry_groups = set(
+        merged_df[group_column]
+        .astype(int)
+        .tolist()
+    )
+    missing_groups = sorted(
+        geometry_groups.difference(matched_groups)
+    )
+
+    if missing_groups:
+        raise ValueError(
+            "No bending setup row was found for geometry Group_ID "
+            f"values: {missing_groups[:20]}"
+        )
+
+    return merged_df
+
 def load_geometry_data(
     path: str | Path,
     bending_setups_df: pd.DataFrame,
@@ -242,6 +397,11 @@ def load_geometry_data(
         bending_setups_df=bending_setups_df,
     )
 
+    geometry_df = merge_group_setup_features(
+        geometry_df=geometry_df,
+        bending_setups_df=bending_setups_df,
+    )
+
     return geometry_df.reset_index(drop=True)
 
 def load_selected_geometry_source(
@@ -251,7 +411,7 @@ def load_selected_geometry_source(
     bending_setups_df: pd.DataFrame,
 ) -> tuple[pd.DataFrame, str, Path]:
     """
-    Load the selected geometry source and attach Group_ID.
+    Load the selected geometry source, attach Group_ID and merge setup features.
     """
     project_root = Path(project_root).resolve()
 

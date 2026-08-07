@@ -96,7 +96,7 @@ for import_path in (
         )
 
 
-from src.pipeline.ml.qrf.mode.experiments.geometry_data_preprocessor import (
+from src.pipeline.ml.qrf.utils.experiments.geometry_data_preprocessor import (
     load_bending_setups,
 )
 

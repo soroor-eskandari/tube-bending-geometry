@@ -8,7 +8,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from src.pipeline.ml.qrf.mode.experiments.qrf_pipeline import (
+from src.pipeline.ml.qrf.utils.experiments.qrf_pipeline import (
     run,
 )
 
@@ -110,7 +110,7 @@ STORED_QRF_MODEL_DIR = Path(
     "/pipeline"
     "/ml"
     "/qrf"
-    "/result"
+    "/results"
     "/models"
 )
 
@@ -246,20 +246,18 @@ def qrf_training_geometry_sources(
             project_root
             / "data"
             / "rf_augmented"
-            / "ui_data"
             / (
                 "final_geometry_sensor_augmented_noise__"
-                "time_wrapping__scaling__jittering.csv"
+                "time_wrapping__scaling__jittering.parquet"
             )
         ),
         "within_group_interpolation_raw": (
             project_root
             / "data"
             / "rf_augmented"
-            / "ui_data"
             / (
                 "final_geometry_within_group_"
-                "interpolation_raw.csv"
+                "interpolation_raw.parquet"
             )
         ),
     }
@@ -313,15 +311,11 @@ def load_top_qrf_splits_by_axis(
     project_root: Path,
 ) -> dict[str, dict]:
     """
-    Load the independent Top-1 split for each target axis.
+    Load the independent best-ranked split for each target axis.
 
     Selection policy
     ----------------
-    Main model:
-        Select the unique row where qrf_rank_main == 1.
-
-    Secondary model:
-        Select the unique row where qrf_rank_secondary == 1.
+    Select the unique row where qrf_rank_<axis> == 1.
 
     The stored rankings are shared across every geometry source.
     Therefore, various_splits.parquet does not need a
@@ -341,6 +335,8 @@ def load_top_qrf_splits_by_axis(
     required_columns = {
         "split_index",
         "split_name",
+        "train_group_ids",
+        "test_group_ids",
         "train_experiment_ids",
         "test_experiment_ids",
         "qrf_rank_main",
@@ -481,7 +477,7 @@ def load_top_qrf_splits_by_axis(
             .astype(float)
         )
 
-        rank_one_df = (
+        selected_df = (
             axis_df.loc[
                 axis_df[
                     rank_column
@@ -491,9 +487,9 @@ def load_top_qrf_splits_by_axis(
             .reset_index(drop=True)
         )
 
-        if len(rank_one_df) != 1:
+        if len(selected_df) != 1:
             rank_one_indices = (
-                rank_one_df[
+                selected_df[
                     "split_index"
                 ]
                 .astype(int)
@@ -503,12 +499,12 @@ def load_top_qrf_splits_by_axis(
             raise ValueError(
                 "Expected exactly one rank-1 QRF "
                 f"split for axis={axis!r}, but "
-                f"found {len(rank_one_df)}. "
+                f"found {len(selected_df)}. "
                 f"Split indices: "
                 f"{rank_one_indices}"
             )
 
-        row = rank_one_df.iloc[0]
+        row = selected_df.iloc[0]
 
         train_experiment_ids = (
             _normalize_stored_experiment_ids(
@@ -571,11 +567,26 @@ def load_top_qrf_splits_by_axis(
             "qrf_score": float(
                 row[score_column]
             ),
+            "split_selection_mode": (
+                "best_rank"
+            ),
+            "split_rank_column": rank_column,
+            "split_score_column": score_column,
             "train_exp": (
                 train_experiment_ids
             ),
             "test_exp": (
                 test_experiment_ids
+            ),
+            "train_group_ids": (
+                _normalize_stored_experiment_ids(
+                    row["train_group_ids"]
+                )
+            ),
+            "test_group_ids": (
+                _normalize_stored_experiment_ids(
+                    row["test_group_ids"]
+                )
             ),
         }
 
@@ -602,8 +613,13 @@ def build_splits_by_source(
     top_splits_by_axis: dict[str, dict],
 ) -> dict[str, dict[str, dict]]:
     """
-    Reuse the independent Top-1 main and secondary splits for every
+    Reuse the independent Top-1 main and secondary group splits for every
     geometry source.
+
+    Real geometry is stored only with original experiment IDs, so it keeps the
+    stored train/test experiment lists. Generated geometry sources contain
+    synthetic experiment IDs per Group_ID; for those sources, expand train/test
+    experiments from the selected train/test group IDs inside each source file.
 
     A new dictionary is created for each source and axis so later
     modifications cannot unintentionally affect another source.
@@ -625,6 +641,101 @@ def build_splits_by_source(
             f"{sorted(missing_axes)}"
         )
 
+    def read_geometry_source(path: Path) -> pd.DataFrame:
+        suffix = path.suffix.lower()
+        if suffix == ".csv":
+            return pd.read_csv(path)
+        if suffix in {".parquet", ".pq"}:
+            return pd.read_parquet(path)
+        raise ValueError(
+            f"Unsupported geometry source format: {path}"
+        )
+
+    def copy_split_config(split_config: dict) -> dict:
+        return {
+            key: (
+                list(value)
+                if isinstance(
+                    value,
+                    list,
+                )
+                else value
+            )
+            for key, value in split_config.items()
+        }
+
+    def experiment_ids_for_groups(
+        geometry_df: pd.DataFrame,
+        group_ids: list[int],
+        *,
+        geometry_source: str,
+    ) -> list[int]:
+        group_column = (
+            "Group_ID"
+            if "Group_ID" in geometry_df.columns
+            else "group_id"
+            if "group_id" in geometry_df.columns
+            else None
+        )
+
+        if group_column is None:
+            raise KeyError(
+                "Generated geometry source is missing a Group_ID/group_id "
+                f"column: {geometry_source!r}"
+            )
+
+        required_columns = {
+            group_column,
+            "Experiment_ID",
+        }
+        _validate_required_columns(
+            dataframe=geometry_df,
+            required_columns=required_columns,
+            dataframe_name=(
+                f"Geometry source {geometry_source!r}"
+            ),
+        )
+
+        source_group_ids = pd.to_numeric(
+            geometry_df[group_column],
+            errors="raise",
+        ).astype(int)
+
+        selected_df = geometry_df[
+            source_group_ids.isin(
+                {
+                    int(group_id)
+                    for group_id in group_ids
+                }
+            )
+        ].copy()
+
+        if selected_df.empty:
+            raise ValueError(
+                "No geometry rows were found for "
+                f"geometry_source={geometry_source!r} and "
+                f"group IDs={group_ids}."
+            )
+
+        experiment_ids = sorted(
+            pd.to_numeric(
+                selected_df["Experiment_ID"],
+                errors="raise",
+            )
+            .astype(int)
+            .drop_duplicates()
+            .tolist()
+        )
+
+        if not experiment_ids:
+            raise ValueError(
+                "No Experiment_ID values were found for "
+                f"geometry_source={geometry_source!r} and "
+                f"group IDs={group_ids}."
+            )
+
+        return experiment_ids
+
     splits_by_source: dict[
         str,
         dict[str, dict],
@@ -633,38 +744,70 @@ def build_splits_by_source(
     for geometry_source in (
         geometry_sources
     ):
+        source_axis_splits = {
+            "main": copy_split_config(
+                top_splits_by_axis["main"]
+            ),
+            "secondary": copy_split_config(
+                top_splits_by_axis["secondary"]
+            ),
+        }
+
+        if geometry_source != "real":
+            geometry_df = read_geometry_source(
+                geometry_sources[geometry_source]
+            )
+
+            for axis, split_config in (
+                source_axis_splits.items()
+            ):
+                train_exp = experiment_ids_for_groups(
+                    geometry_df=geometry_df,
+                    group_ids=split_config[
+                        "train_group_ids"
+                    ],
+                    geometry_source=geometry_source,
+                )
+                test_exp = experiment_ids_for_groups(
+                    geometry_df=geometry_df,
+                    group_ids=split_config[
+                        "test_group_ids"
+                    ],
+                    geometry_source=geometry_source,
+                )
+
+                overlap = set(train_exp).intersection(
+                    test_exp
+                )
+                if overlap:
+                    raise ValueError(
+                        "Source-specific train/test experiment leakage "
+                        f"for geometry_source={geometry_source!r}, "
+                        f"axis={axis!r}. Overlap: {sorted(overlap)}"
+                    )
+
+                split_config["train_exp"] = train_exp
+                split_config["test_exp"] = test_exp
+                split_config["split_selection_mode"] = (
+                    "best_rank_group_expanded"
+                )
+
+                logger.info(
+                    "Expanded generated-source split | "
+                    "source=%s | axis=%s | "
+                    "train_groups=%s | test_groups=%s | "
+                    "train_experiments=%s | test_experiments=%s",
+                    geometry_source,
+                    axis,
+                    len(split_config["train_group_ids"]),
+                    len(split_config["test_group_ids"]),
+                    len(train_exp),
+                    len(test_exp),
+                )
+
         splits_by_source[
             geometry_source
-        ] = {
-            "main": {
-                key: (
-                    list(value)
-                    if isinstance(
-                        value,
-                        list,
-                    )
-                    else value
-                )
-                for key, value
-                in top_splits_by_axis[
-                    "main"
-                ].items()
-            },
-            "secondary": {
-                key: (
-                    list(value)
-                    if isinstance(
-                        value,
-                        list,
-                    )
-                    else value
-                )
-                for key, value
-                in top_splits_by_axis[
-                    "secondary"
-                ].items()
-            },
-        }
+        ] = source_axis_splits
 
     return splits_by_source
 
@@ -675,7 +818,8 @@ def build_splits_by_source(
 
 def load_tuned_qrf_params_by_axis(
     project_root: Path,
-) -> dict[str, dict]:
+    selected_splits_by_axis: dict[str, dict],
+) -> dict[str, dict] | None:
     """
     Load the best tuned QRF parameters for main and secondary axes.
     """
@@ -723,6 +867,10 @@ def load_tuned_qrf_params_by_axis(
         "main",
         "secondary",
     ):
+        selected_split = (
+            selected_splits_by_axis[axis]
+        )
+
         axis_df = tuning_df[
             tuning_df[
                 "target_axis"
@@ -734,6 +882,86 @@ def load_tuned_qrf_params_by_axis(
                 "No tuned QRF parameters were found "
                 f"for axis={axis!r} in {tuning_path}."
             )
+
+        if "split_index" in axis_df.columns:
+            axis_df = axis_df[
+                pd.to_numeric(
+                    axis_df["split_index"],
+                    errors="raise",
+                ).astype(int).eq(
+                    int(
+                        selected_split[
+                            "split_index"
+                        ]
+                    )
+                )
+            ].copy()
+
+        if axis_df.empty:
+            logger.warning(
+                "No tuned QRF parameters match the selected "
+                "split for axis=%r. Selected split_index=%s, "
+                "split_name=%r, selection_mode=%r. "
+                "Falling back to hard-coded QRF parameters "
+                "for all axes. Re-run hyperparameter tuning "
+                "with the same QRF split selection to use "
+                "tuned parameters.",
+                axis,
+                selected_split["split_index"],
+                selected_split["split_name"],
+                selected_split["split_selection_mode"],
+            )
+            return None
+
+        if "split_name" in axis_df.columns:
+            axis_df = axis_df[
+                axis_df["split_name"].astype(str).eq(
+                    str(
+                        selected_split[
+                            "split_name"
+                        ]
+                    )
+                )
+            ].copy()
+
+        if axis_df.empty:
+            logger.warning(
+                "Tuned QRF parameters do not match the selected "
+                "split_name for axis=%r. Selected split_name=%r. "
+                "Falling back to hard-coded QRF parameters "
+                "for all axes. Re-run hyperparameter tuning "
+                "with the same QRF split selection to use "
+                "tuned parameters.",
+                axis,
+                selected_split["split_name"],
+            )
+            return None
+
+        if "split_selection_mode" in axis_df.columns:
+            axis_df = axis_df[
+                axis_df[
+                    "split_selection_mode"
+                ].astype(str).eq(
+                    str(
+                        selected_split[
+                            "split_selection_mode"
+                        ]
+                    )
+                )
+            ].copy()
+
+        if axis_df.empty:
+            logger.warning(
+                "Tuned QRF parameters do not match the selected "
+                "split selection mode for axis=%r. "
+                "Selected mode=%r. Falling back to hard-coded "
+                "QRF parameters for all axes. Re-run "
+                "hyperparameter tuning with the same QRF split "
+                "selection to use tuned parameters.",
+                axis,
+                selected_split["split_selection_mode"],
+            )
+            return None
 
         axis_df = axis_df.sort_values(
             "selection_score"
@@ -1047,28 +1275,38 @@ def main() -> None:
         tuned_params_by_axis = (
             load_tuned_qrf_params_by_axis(
                 project_root=project_root,
-            )
-        )
-
-        for (
-            axis,
-            tuned_params,
-        ) in tuned_params_by_axis.items():
-            logger.info(
-                "Loaded tuned QRF params | "
-                "axis=%s | params=%s",
-                axis,
-                tuned_params,
-            )
-
-        model_params_by_source = (
-            build_model_params_by_source(
-                geometry_sources=geometry_sources,
-                tuned_params_by_axis=(
-                    tuned_params_by_axis
+                selected_splits_by_axis=(
+                    top_splits_by_axis
                 ),
             )
         )
+
+        if tuned_params_by_axis is None:
+            model_params_by_source = (
+                build_default_model_params_by_source(
+                    geometry_sources=geometry_sources,
+                )
+            )
+        else:
+            for (
+                axis,
+                tuned_params,
+            ) in tuned_params_by_axis.items():
+                logger.info(
+                    "Loaded tuned QRF params | "
+                    "axis=%s | params=%s",
+                    axis,
+                    tuned_params,
+                )
+
+            model_params_by_source = (
+                build_model_params_by_source(
+                    geometry_sources=geometry_sources,
+                    tuned_params_by_axis=(
+                        tuned_params_by_axis
+                    ),
+                )
+            )
     else:
         logger.info(
             "IS_BEST_CONFIG=False; using default "

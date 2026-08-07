@@ -45,6 +45,27 @@ class RFDataGeneratorPipeline:
         return [int(value)]
 
     @staticmethod
+    def _synthetic_experiment_ids(
+        group_idx: int,
+        n_generated: int,
+    ) -> list[int]:
+        """
+        Create synthetic Experiment_ID values that cannot collide with
+        real experiment IDs or synthetic IDs from other groups.
+        """
+        synthetic_id_base = (
+            int(group_idx) + 1
+        ) * 1_000_000
+
+        return [
+            synthetic_id_base + offset
+            for offset in range(
+                1,
+                int(n_generated) + 1,
+            )
+        ]
+
+    @staticmethod
     def _non_raw_sensor_augmentation_modes() -> list[str]:
         return [SensorDataAugmentor.ALL_METHODS_MODE]
 
@@ -642,7 +663,13 @@ class RFDataGeneratorPipeline:
                         y_main_new = model_main.predict(X_main_selected)
                         y_sec_new = model_secondary.predict(X_sec_selected)
                         n_generated = len(y_main_new)
-                        synthetic_experiment_ids = list(range(1, n_generated + 1))
+                        synthetic_experiment_ids = (
+                            RFDataGeneratorPipeline
+                            ._synthetic_experiment_ids(
+                                group_idx=group_idx,
+                                n_generated=n_generated,
+                            )
+                        )
 
                         y_main_all = np.vstack([Y_main, y_main_new])
                         y_sec_all = np.vstack([Y_sec, y_sec_new])
@@ -990,7 +1017,13 @@ class RFDataGeneratorPipeline:
                 y_sec_all = np.vstack([y_sec_original, y_sec_new])
 
                 n_generated = len(y_main_new)
-                synthetic_experiment_ids = list(range(1, n_generated + 1))
+                synthetic_experiment_ids = (
+                    RFDataGeneratorPipeline
+                    ._synthetic_experiment_ids(
+                        group_idx=group_idx,
+                        n_generated=n_generated,
+                    )
+                )
                 all_selection_records.extend(
                     RFSignalSelectionRecorder.build_records(
                         group_id=group_idx + 1,

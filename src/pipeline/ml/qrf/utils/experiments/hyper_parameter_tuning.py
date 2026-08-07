@@ -37,13 +37,12 @@ TARGET_COLUMNS_BY_AXIS = {
 DEFAULT_PARAM_GRID = {
     # 200 is a stable baseline; 100 and 400 test convergence around it.
     "n_estimators": [200, 100, 400],
-    "max_depth": [6, 8, 10],
-    "min_samples_leaf": [16, 24, 32],
-    "min_samples_split": [20,40],
+    "max_depth": [4,5,6],
+    "min_samples_leaf": [32,48,64],
+    "min_samples_split": [40,60,80],
     "max_features": [0.3, 0.5, "sqrt"],
     "bootstrap": [True],
 }
-
 
 DEFAULT_QUANTILE_GRID = [
     (0.01, 0.99),
@@ -129,10 +128,13 @@ class HyperParameterTuning:
                     f"No target column configured for axis={axis!r}."
                 )
 
-            split_index = self._best_split_index(
+            split_selection = self._selected_split_selection(
                 split_metadata_df=split_metadata_df,
                 axis=axis,
             )
+            split_index = split_selection[
+                "split_index"
+            ]
 
             train_df, test_df, split_row = make_train_test_split(
                 geometry_df=geometry_df,
@@ -174,7 +176,19 @@ class HyperParameterTuning:
                         f"split_{split_index}",
                     )
                 ),
-                "split_rank": int(self.rank_value),
+                "split_rank": int(
+                    split_row[f"qrf_rank_{axis}"]
+                ),
+                "split_selection_mode": (
+                    split_selection[
+                        "split_selection_mode"
+                    ]
+                ),
+                "split_rank_column": (
+                    split_selection[
+                        "split_rank_column"
+                    ]
+                ),
                 "geometry_source": geometry_source,
                 "geometry_path": str(geometry_path),
                 "target_column": target_column,
@@ -1193,6 +1207,7 @@ class HyperParameterTuning:
             "coverage_error_test", "lower_quantile", "upper_quantile",
             "best_lower_quantile", "best_upper_quantile",
             "split_index", "split_name", "split_rank",
+            "split_selection_mode",
             "train_rows", "test_rows", "train_groups", "test_groups",
             "cv_best_score", "cv_curve_distance", "cv_trend_error",
             "cv_coverage", "cv_pinaw",
@@ -1206,6 +1221,21 @@ class HyperParameterTuning:
         return results_df[ordered + remaining].sort_values(
             ["target_axis", "selection_score"]
         )
+    def _selected_split_selection(
+        self,
+        split_metadata_df: pd.DataFrame,
+        axis: str,
+    ) -> dict[str, Any]:
+        split_index = self._best_split_index(
+            split_metadata_df=split_metadata_df,
+            axis=axis,
+        )
+        return {
+            "split_index": int(split_index),
+            "split_selection_mode": "best_rank",
+            "split_rank_column": f"qrf_rank_{axis}",
+        }
+
     def _best_split_index(
         self,
         split_metadata_df: pd.DataFrame,

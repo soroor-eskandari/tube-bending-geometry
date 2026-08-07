@@ -104,6 +104,15 @@ def attach_group_id(
     if "Group_ID" in geometry_df.columns:
         return geometry_df
 
+    if "group_id" in geometry_df.columns:
+        geometry_df = geometry_df.copy()
+        geometry_df["Group_ID"] = pd.to_numeric(
+            geometry_df["group_id"],
+            errors="raise",
+        ).astype(int)
+
+        return geometry_df
+
     geometry_experiment_column = "Experiment_ID"
     setup_experiment_column = "Experiment_Number"
 

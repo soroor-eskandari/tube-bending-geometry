@@ -13,6 +13,7 @@ st.title("RF Generated Geometry by Group")
 
 project_root = Path(__file__).resolve().parent
 ui_data_dir = project_root / "data" / "rf_augmented" / "ui_data"
+augmented_data_dir = project_root / "data" / "rf_augmented"
 manifest_path = ui_data_dir / "manifest.json"
 
 ANGLE_COL = "Angle[degree]ORDistance[mm]"
@@ -33,6 +34,9 @@ def load_manifest(path: Path, file_mtime: float) -> dict:
 
 @st.cache_data
 def load_table(path: Path, file_mtime: float) -> pd.DataFrame:
+    if path.suffix == ".parquet":
+        return pd.read_parquet(path)
+
     return pd.read_csv(path)
 
 
@@ -45,6 +49,24 @@ def load_existing_table(path: Path) -> pd.DataFrame | None:
     if not path.exists():
         return None
     return load_table(path, path.stat().st_mtime)
+
+
+def generated_geometry_path(file_name: str) -> Path:
+    source_overrides = {
+        "final_geometry_sensor_augmented_noise__time_wrapping__scaling__jittering.csv": (
+            augmented_data_dir
+            / "final_geometry_sensor_augmented_noise__time_wrapping__scaling__jittering.parquet"
+        ),
+        "final_geometry_within_group_interpolation_raw.csv": (
+            augmented_data_dir
+            / "final_geometry_within_group_interpolation_raw.parquet"
+        ),
+    }
+
+    return source_overrides.get(
+        file_name,
+        ui_data_dir / file_name,
+    )
 
 
 if not manifest_path.exists():
@@ -68,7 +90,9 @@ def available_group_ids() -> list[int]:
     group_ids = set()
 
     for config in METHODS.values():
-        path = ui_data_dir / config["csv"]
+        path = generated_geometry_path(
+            config["csv"]
+        )
         if not path.exists():
             continue
         df = load_table(path, path.stat().st_mtime)
@@ -255,7 +279,7 @@ def render_method_section(
     selected_group: int,
     section_key: str,
 ):
-    geometry_path = ui_data_dir / csv
+    geometry_path = generated_geometry_path(csv)
 
     geometry_df = load_existing_table(geometry_path)
     if geometry_df is None:

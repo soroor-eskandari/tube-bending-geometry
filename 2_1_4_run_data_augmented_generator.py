@@ -74,7 +74,7 @@ if __name__ == "__main__":
 
     project_root = Path(".")
     output_dir = project_root / "data" / "rf_augmented"
-    n_new_samples = 6
+    n_new_samples = 15
     generation_modes = (
         "within-group-interpolation",
         "sensor-augmented",

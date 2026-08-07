@@ -10,18 +10,18 @@ import yaml
 import json
 import joblib
 
-from src.pipeline.ml.qrf.mode.experiments.data_splittor import (
+from src.pipeline.ml.qrf.utils.experiments.data_splittor import (
     load_split_metadata,
     make_train_test_split,
 )
-from src.pipeline.ml.qrf.mode.experiments.geometry_data_preprocessor import (
+from src.pipeline.ml.qrf.utils.experiments.geometry_data_preprocessor import (
     load_bending_setups,
     load_selected_geometry_source,
 )
-from src.pipeline.ml.qrf.mode.experiments.qrf_evaluator import (
+from src.pipeline.ml.qrf.utils.experiments.qrf_evaluator import (
     evaluate_predictions,
 )
-from src.pipeline.ml.qrf.mode.experiments.qrf_model_trainer import (
+from src.pipeline.ml.qrf.utils.experiments.qrf_model_trainer import (
     train_and_predict,
 )
 
@@ -681,6 +681,13 @@ def _train_and_store_single_qrf_model(
         split_config["split_name"]
     )
 
+    predictions_df["split_selection_mode"] = (
+        split_config.get(
+            "split_selection_mode",
+            "unknown",
+        )
+    )
+
     predictions_df["y_true"] = y_true
     predictions_df["y_lower"] = (
         predictions.lower
@@ -718,6 +725,16 @@ def _train_and_store_single_qrf_model(
         "qrf_rank": qrf_rank,
         "qrf_score": split_config.get(
             "qrf_score"
+        ),
+        "split_selection_mode": split_config.get(
+            "split_selection_mode",
+            "unknown",
+        ),
+        "split_rank_column": split_config.get(
+            "split_rank_column"
+        ),
+        "split_score_column": split_config.get(
+            "split_score_column"
         ),
         "train_rows": len(train_df),
         "test_rows": len(test_df),

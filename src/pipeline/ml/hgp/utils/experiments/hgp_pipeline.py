@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+import json
+import shutil
 from pathlib import Path
 from typing import Any
 
 import joblib
 import pandas as pd
 
-from src.pipeline.ml.common.geometry_data_preprocessor import (
+from src.pipeline.ml.hgp.utils.experiments.geometry_data_preprocessor import (
     load_bending_setups,
     load_selected_geometry_source,
 )
@@ -36,6 +38,23 @@ def _resolve_path(
         path = project_root / path
 
     return path.resolve()
+
+
+def _remove_runtime_rng_state(
+    model_bundle: HGPModelBundle,
+) -> None:
+    """
+    Drop fitted sklearn runtime RNG objects before persisting.
+
+    They are not needed for prediction, and NumPy 2.x RandomState pickles
+    can fail to load in NumPy 1.x Streamlit environments.
+    """
+    for model in (
+        model_bundle.noise_model,
+        model_bundle.final_mean_model,
+    ):
+        if hasattr(model, "_rng"):
+            model._rng = None
 
 
 def _split_geometry_by_experiment_ids(
@@ -198,9 +217,23 @@ def _model_path(
     )
 
 
+def _json_default(value: Any) -> Any:
+    if isinstance(value, Path):
+        return str(value)
+
+    if hasattr(value, "item"):
+        return value.item()
+
+    if hasattr(value, "tolist"):
+        return value.tolist()
+
+    return str(value)
+
+
 def train_single_model(
     *,
     geometry_df: pd.DataFrame,
+    geometry_path: Path,
     geometry_source: str,
     target_axis: str,
     split_config: dict,
@@ -214,9 +247,8 @@ def train_single_model(
     Exactly one model file is kept for every:
         geometry_source × target_axis
 
-    Existing model files are overwritten by joblib.dump.
-    No timestamped run directory, metrics file, metadata file,
-    or prediction file is stored.
+    The axis directory is deleted and recreated on every run, so the
+    latest result is the only stored result.
     """
     if target_axis not in HGP_TARGET_COLUMNS_BY_AXIS:
         raise ValueError(
@@ -316,6 +348,10 @@ def train_single_model(
         geometry_source=geometry_source,
         target_axis=target_axis,
     )
+
+    if model_directory.exists():
+        shutil.rmtree(model_directory)
+
     model_directory.mkdir(
         parents=True,
         exist_ok=True,
@@ -327,11 +363,157 @@ def train_single_model(
         target_axis=target_axis,
     )
 
+    _remove_runtime_rng_state(
+        model_bundle
+    )
+
     # joblib.dump overwrites the existing file at the same path.
     joblib.dump(
         model_bundle,
         model_path,
     )
+
+    split_index = split_config.get(
+        "split_index"
+    )
+    split_name = split_config.get(
+        "split_name",
+        f"{target_axis}_split",
+    )
+
+    prediction_columns = list(
+        dict.fromkeys(
+            [
+                "Experiment_ID",
+                "Group_ID",
+                *feature_columns,
+                target_column,
+            ]
+        )
+    )
+    prediction_columns = [
+        column
+        for column in prediction_columns
+        if column in test_df.columns
+    ]
+
+    predictions_df = test_df[
+        prediction_columns
+    ].copy()
+    predictions_df["geometry_source"] = geometry_source
+    predictions_df["target_axis"] = target_axis
+    predictions_df["target_column"] = target_column
+    predictions_df["split_index"] = (
+        int(split_index)
+        if split_index is not None
+        else None
+    )
+    predictions_df["split_name"] = str(split_name)
+    predictions_df["y_true"] = y_true
+    predictions_df["y_lower"] = predictions.lower
+    predictions_df["y_mean"] = predictions.mean
+    predictions_df["y_median"] = predictions.median
+    predictions_df["y_upper"] = predictions.upper
+    predictions_df["latent_std"] = predictions.latent_std
+    predictions_df["aleatoric_std"] = predictions.aleatoric_std
+    predictions_df["total_std"] = predictions.total_std
+
+    predictions_df.to_parquet(
+        model_directory / "test_predictions.parquet",
+        index=False,
+    )
+    predictions_df.to_csv(
+        model_directory / "test_predictions.csv",
+        index=False,
+    )
+
+    metrics_row = {
+        "geometry_source": geometry_source,
+        "geometry_path": str(geometry_path),
+        "target_axis": target_axis,
+        "target_column": target_column,
+        "split_index": (
+            int(split_index)
+            if split_index is not None
+            else None
+        ),
+        "split_name": str(split_name),
+        "hgp_rank": split_config.get("hgp_rank"),
+        "source_rank_column": split_config.get(
+            "source_rank_column"
+        ),
+        "source_score": split_config.get("source_score"),
+        "train_rows": len(train_df),
+        "test_rows": len(test_df),
+        "aggregated_train_rows": int(
+            model_bundle.model_config[
+                "aggregated_train_rows"
+            ]
+        ),
+        "train_experiments": (
+            train_df["Experiment_ID"].nunique()
+        ),
+        "test_experiments": (
+            test_df["Experiment_ID"].nunique()
+        ),
+        **metrics,
+    }
+
+    pd.DataFrame(
+        [metrics_row]
+    ).to_parquet(
+        model_directory / "metrics.parquet",
+        index=False,
+    )
+    pd.DataFrame(
+        [metrics_row]
+    ).to_csv(
+        model_directory / "metrics.csv",
+        index=False,
+    )
+
+    metadata = {
+        **metrics_row,
+        "feature_columns": list(feature_columns),
+        "model_config": dict(model_bundle.model_config),
+        "train_experiment_ids": sorted(
+            {
+                int(value)
+                for value in split_config["train_exp"]
+            }
+        ),
+        "test_experiment_ids": sorted(
+            {
+                int(value)
+                for value in split_config["test_exp"]
+            }
+        ),
+        "model_path": str(model_path),
+        "artifact_dir": str(model_directory),
+        "stored_files": {
+            "model": "hgp_model.joblib",
+            "metadata": "metadata.json",
+            "metrics_parquet": "metrics.parquet",
+            "metrics_csv": "metrics.csv",
+            "test_predictions_parquet": (
+                "test_predictions.parquet"
+            ),
+            "test_predictions_csv": "test_predictions.csv",
+        },
+    }
+
+    with (
+        model_directory / "metadata.json"
+    ).open(
+        "w",
+        encoding="utf-8",
+    ) as file:
+        json.dump(
+            metadata,
+            file,
+            indent=2,
+            default=_json_default,
+        )
 
     print(
         "Stored HGP model | "
@@ -339,18 +521,26 @@ def train_single_model(
         f"axis={target_axis} | "
         f"coverage={metrics['coverage_percent']:.2f}% | "
         f"rmse={metrics['rmse']:.4f} | "
-        f"overwritten_path={model_path}"
+        f"raw_train_rows={len(train_df)} | "
+        f"aggregated_train_rows="
+        f"{model_bundle.model_config['aggregated_train_rows']} | "
+        f"artifact_dir={model_directory}"
     )
 
     return {
         "geometry_source": geometry_source,
         "target_axis": target_axis,
         "target_column": target_column,
+        "artifact_dir": model_directory,
         "model_path": model_path,
         "model": model_bundle,
         "predictions": predictions,
+        "predictions_df": predictions_df,
         "metrics": metrics,
         "train_rows": len(train_df),
+        "aggregated_train_rows": int(
+            model_bundle.model_config["aggregated_train_rows"]
+        ),
         "test_rows": len(test_df),
     }
 
@@ -409,6 +599,48 @@ def run(
         excluded_experiments=(
             excluded_experiments
         ),
+    )
+
+    for geometry_source, geometry_path_value in geometry_sources.items():
+        geometry_path = _resolve_path(
+            project_root,
+            geometry_path_value,
+        )
+
+        if not geometry_path.exists():
+            raise FileNotFoundError(
+                f"Geometry source {geometry_source!r} "
+                f"was not found: {geometry_path}"
+            )
+
+        if geometry_source not in splits_by_source:
+            raise KeyError(
+                "No axis-specific splits were supplied for "
+                f"geometry_source={geometry_source!r}."
+            )
+
+        missing_axes = {
+            "main",
+            "secondary",
+        }.difference(
+            splits_by_source[
+                geometry_source
+            ]
+        )
+
+        if missing_axes:
+            raise KeyError(
+                "Source split configuration is missing axes: "
+                f"{sorted(missing_axes)} for "
+                f"geometry_source={geometry_source!r}."
+            )
+
+    if model_root.exists():
+        shutil.rmtree(model_root)
+
+    model_root.mkdir(
+        parents=True,
+        exist_ok=True,
     )
 
     results: dict[
@@ -501,6 +733,7 @@ def run(
             source_results[target_axis] = (
                 train_single_model(
                     geometry_df=geometry_df,
+                    geometry_path=geometry_path,
                     geometry_source=loaded_source,
                     target_axis=target_axis,
                     split_config=source_splits[

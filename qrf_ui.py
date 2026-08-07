@@ -2,10 +2,17 @@ import sys
 from pathlib import Path
 
 project_root = Path(__file__).resolve().parent
-sys.path.insert(0, str(project_root / "src"))
+for import_path in (
+    project_root,
+    project_root / "src",
+):
+    import_path_value = str(import_path)
 
-import json
+    if import_path_value not in sys.path:
+        sys.path.insert(0, import_path_value)
+
 import ast
+import json
 
 import joblib
 import matplotlib.pyplot as plt
@@ -14,7 +21,7 @@ import pandas as pd
 import streamlit as st
 from matplotlib.lines import Line2D
 
-from pipeline.ml.qrf.mode.experiments.geometry_data_preprocessor import (
+from pipeline.ml.qrf.utils.experiments.geometry_data_preprocessor import (
     load_bending_setups,
     load_geometry_data,
     read_table,
@@ -34,7 +41,7 @@ result_dir = (
     / "pipeline"
     / "ml"
     / "qrf"
-    / "result"
+    / "results"
 )
 
 model_dir = result_dir / "models"
@@ -102,20 +109,18 @@ def qrf_training_geometry_sources(project_root: Path) -> dict[str, Path]:
             project_root
             / "data"
             / "rf_augmented"
-            / "ui_data"
             / (
                 "final_geometry_sensor_augmented_noise__"
-                "time_wrapping__scaling__jittering.csv"
+                "time_wrapping__scaling__jittering.parquet"
             )
         ),
         "within_group_interpolation_raw": (
             project_root
             / "data"
             / "rf_augmented"
-            / "ui_data"
             / (
                 "final_geometry_within_group_"
-                "interpolation_raw.csv"
+                "interpolation_raw.parquet"
             )
         ),
     }
@@ -220,7 +225,7 @@ def load_best_splits_by_target(
     metadata_mtime: float,
 ) -> dict[str, dict]:
     """
-    Load one independently ranked Top-1 split per target axis.
+    Load one independently ranked best split per target axis.
 
     The split catalog contains one row per split_index. Main and
     secondary ranking values are stored in separate columns, so no
@@ -298,6 +303,7 @@ def load_best_splits_by_target(
     selected: dict[str, dict] = {}
 
     for target_name, columns in target_rank_columns.items():
+        axis = columns["axis"]
         rank_column = columns["rank"]
         score_column = columns["score"]
 
@@ -321,7 +327,7 @@ def load_best_splits_by_target(
             errors="raise",
         ).astype(float)
 
-        top_df = (
+        selected_df = (
             ranked_df[
                 ranked_df[rank_column].eq(1)
             ]
@@ -329,15 +335,15 @@ def load_best_splits_by_target(
             .reset_index(drop=True)
         )
 
-        if len(top_df) != 1:
+        if len(selected_df) != 1:
             raise ValueError(
                 f"Expected exactly one rank-1 split for "
-                f"{target_name!r}, but found {len(top_df)}. "
+                f"{target_name!r}, but found {len(selected_df)}. "
                 f"Split indices: "
-                f"{top_df['split_index'].astype(int).tolist()}"
+                f"{selected_df['split_index'].astype(int).tolist()}"
             )
 
-        row = top_df.iloc[0]
+        row = selected_df.iloc[0]
 
         train_group_ids = decode_experiment_ids(
             row["train_group_ids"]
@@ -386,11 +392,12 @@ def load_best_splits_by_target(
             )
 
         selected[target_name] = {
-            "axis": columns["axis"],
+            "axis": axis,
             "split_index": int(row["split_index"]),
             "split_name": str(row["split_name"]),
             "qrf_rank": int(row[rank_column]),
             "qrf_score": float(row[score_column]),
+            "split_selection_mode": "best_rank",
             "train_group_ids": train_group_ids,
             "test_group_ids": test_group_ids,
             "train_experiment_ids": train_experiment_ids,
@@ -593,6 +600,7 @@ def load_qrf_artifact(
     geometry_source: str,
     axis: str,
     split_index: int,
+    expected_split_config: dict | None = None,
 ) -> dict:
     artifact_dir = find_qrf_artifact_dir(
         geometry_source=geometry_source,
@@ -612,6 +620,46 @@ def load_qrf_artifact(
         str(metadata_path),
         metadata_path.stat().st_mtime,
     )
+
+    if expected_split_config is not None:
+        expected_fields = [
+            "split_index",
+            "split_name",
+            "split_selection_mode",
+        ]
+        mismatches = []
+
+        for field in expected_fields:
+            if field not in metadata:
+                continue
+
+            expected_value = expected_split_config.get(
+                field
+            )
+            actual_value = metadata.get(field)
+
+            if str(actual_value) != str(expected_value):
+                mismatches.append(
+                    (
+                        field,
+                        expected_value,
+                        actual_value,
+                    )
+                )
+
+        if mismatches:
+            mismatch_text = "; ".join(
+                (
+                    f"{field}: expected {expected!r}, "
+                    f"artifact has {actual!r}"
+                )
+                for field, expected, actual in mismatches
+            )
+            st.warning(
+                "Loaded QRF artifact metadata does not match "
+                "the selected split configuration. "
+                f"{mismatch_text}"
+            )
 
     model = load_qrf_model(
         str(model_path),
@@ -702,6 +750,7 @@ def predict_split_group(
             geometry_source=geometry_source,
             axis=axis,
             split_index=split_config["split_index"],
+            expected_split_config=split_config,
         )
 
         model = artifact["model"]
@@ -816,6 +865,7 @@ def predict_target_group(
         geometry_source=geometry_source,
         axis=axis,
         split_index=split_config["split_index"],
+        expected_split_config=split_config,
     )
 
     model = artifact["model"]
@@ -901,10 +951,17 @@ class QRFVisualizer:
         "#5D4037",
     ]
 
-    def __init__(self, prediction_df, angle_col, plot_mode):
+    def __init__(
+        self,
+        prediction_df,
+        angle_col,
+        plot_mode,
+        experiment_count=None,
+    ):
         self.prediction_df = prediction_df
         self.angle_col = angle_col
         self.plot_mode = plot_mode
+        self.experiment_count = experiment_count
 
     def prepare_data(self, target_name):
         target_predictions = self.prediction_df[
@@ -959,6 +1016,17 @@ class QRFVisualizer:
         raw_inside_df = raw_target_df[raw_inside_mask]
         raw_outside_df = raw_target_df[~raw_inside_mask]
         metrics = compute_metrics(raw_target_df)
+        experiment_count = (
+            int(self.experiment_count)
+            if self.experiment_count is not None
+            else int(
+                raw_target_df[
+                    "Experiment_ID"
+                ]
+                .dropna()
+                .nunique()
+            )
+        )
 
         plt.style.use("seaborn-v0_8-whitegrid")
         fig, ax = plt.subplots(figsize=(14, 6))
@@ -1072,6 +1140,12 @@ class QRFVisualizer:
         legend_elements = [
             Line2D([0], [0], color="#4C72B0", lw=10, alpha=0.22, label="Prediction Interval"),
             Line2D([0], [0], color="#FF8C00", lw=self.prediction_linewidth, label="Prediction Median"),
+            Line2D(
+                [],
+                [],
+                linestyle="None",
+                label=f"Source experiments: {experiment_count}",
+            ),
         ]
         if self.plot_mode == "Experiment signals":
             legend_elements.append(
@@ -1122,8 +1196,8 @@ class QRFVisualizer:
 
 
 ZOOM_OUT_Y_LIMITS = (
-    20.8,
-    23.0,
+    20.0,
+    24.0,
 )
 
 
@@ -1193,10 +1267,11 @@ def render_axis_section(
     st.header(section_title)
 
     st.caption(
-        f"Independent rank-1 split for `{axis}`: "
+        f"Independent best-rank split for `{axis}`: "
         f"split {split_config['split_index']} — "
         f"`{split_config['split_name']}` "
-        f"(score={split_config['qrf_score']:.6f})"
+        f"(rank={split_config['qrf_rank']}, "
+        f"score={split_config['qrf_score']:.6f})"
     )
 
     dataset_widget_key = (
@@ -1360,9 +1435,18 @@ def render_axis_section(
         st.warning(
             f"No geometry rows found for "
             f"{format_group(selected_group)} "
-            f"in the `{split_name}` split."
+            f"in the `{split_name}` split for "
+            f"`{dataset_label(geometry_source)}`."
         )
         return
+
+    selected_group_experiment_count = int(
+        selected_split_df[
+            "Experiment_ID"
+        ]
+        .dropna()
+        .nunique()
+    )
 
     if split_name == "test":
         prediction_df = (
@@ -1418,6 +1502,7 @@ def render_axis_section(
         "prediction_df": prediction_df,
         "plot_mode": plot_mode,
         "scaling": scaling,
+        "experiment_count": selected_group_experiment_count,
         "plot_slot": plot_slot,
     }
 
@@ -1449,6 +1534,7 @@ for section in active_axis_sections:
             prediction_df=section["prediction_df"],
             angle_col="angle",
             plot_mode=section["plot_mode"],
+            experiment_count=section["experiment_count"],
         )
 
         visualizer.plot_target(

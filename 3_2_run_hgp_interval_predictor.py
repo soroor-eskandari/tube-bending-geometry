@@ -33,8 +33,13 @@ logger = logging.getLogger(__name__)
 # ============================================================
 
 HGP_FEATURE_COLUMNS = [
-    "Group_ID",
     "Angle[degree]ORDistance[mm]",
+    "Collet boost",
+    "Pressure-die distance",
+    "Mandrel retraction timing",
+    "Pressure-die boost",
+    "Clamp-die lateral position",
+    "Mandrel position",
 ]
 
 
@@ -43,6 +48,9 @@ HGP_EXCLUDED_EXPERIMENTS = [
     48,
     166,
 ]
+
+
+IS_BEST_CONFIG = True
 
 
 # This runner uses the already-ranked Top-1 main and secondary splits
@@ -66,6 +74,16 @@ STORED_HGP_MODEL_DIR = Path(
     "/hgp"
     "/results"
     "/models"
+)
+
+
+STORED_HGP_TUNING_PATH = Path(
+    "src"
+    "/pipeline"
+    "/ml"
+    "/hgp"
+    "/data"
+    "/hgp_hyperparameter_tuning_results.parquet"
 )
 
 
@@ -109,17 +127,14 @@ DEFAULT_HGP_PARAMS = {
             1e3,
         ),
     },
-    "initial_alpha": 1e-6,
     "noise_gp_alpha": 1e-4,
-    "residual_mode": "cross_validated",
-    "noise_cv_splits": 1,
     "residual_variance_epsilon": 1e-8,
     "noise_variance_floor": 1e-6,
     "noise_variance_ceiling": 10.0,
     "confidence_level": 0.90,
     "n_restarts_optimizer": 0,
     "random_state": 1100,
-    "group_column": "Experiment_ID",
+    "group_column": "Group_ID",
 }
 
 
@@ -301,20 +316,18 @@ def hgp_training_geometry_sources(
             project_root
             / "data"
             / "rf_augmented"
-            / "ui_data"
             / (
                 "final_geometry_sensor_augmented_noise__"
-                "time_wrapping__scaling__jittering.csv"
+                "time_wrapping__scaling__jittering.parquet"
             )
         ),
         "within_group_interpolation_raw": (
             project_root
             / "data"
             / "rf_augmented"
-            / "ui_data"
             / (
                 "final_geometry_within_group_"
-                "interpolation_raw.csv"
+                "interpolation_raw.parquet"
             )
         ),
     }
@@ -525,7 +538,7 @@ def load_top_splits_by_axis(
             .astype(float)
         )
 
-        rank_one_df = (
+        selected_df = (
             axis_df.loc[
                 axis_df[
                     rank_column
@@ -535,9 +548,9 @@ def load_top_splits_by_axis(
             .reset_index(drop=True)
         )
 
-        if len(rank_one_df) != 1:
+        if len(selected_df) != 1:
             rank_one_indices = (
-                rank_one_df[
+                selected_df[
                     "split_index"
                 ]
                 .astype(int)
@@ -547,11 +560,11 @@ def load_top_splits_by_axis(
             raise ValueError(
                 "Expected exactly one rank-1 split "
                 f"for axis={axis!r}, but found "
-                f"{len(rank_one_df)}. "
+                f"{len(selected_df)}. "
                 f"Split indices: {rank_one_indices}"
             )
 
-        row = rank_one_df.iloc[0]
+        row = selected_df.iloc[0]
 
         train_experiment_ids = (
             _normalize_stored_experiment_ids(
@@ -745,6 +758,216 @@ def build_model_params_by_source(
     }
 
 
+def _normalize_config_value(value: Any) -> Any:
+    """
+    Convert pandas/numpy values from parquet to JSON-like Python values.
+    """
+    if isinstance(value, np.ndarray):
+        return [
+            _normalize_config_value(item)
+            for item in value.tolist()
+        ]
+
+    if isinstance(value, dict):
+        return {
+            key: _normalize_config_value(item)
+            for key, item in value.items()
+        }
+
+    if isinstance(value, list):
+        return [
+            _normalize_config_value(item)
+            for item in value
+        ]
+
+    if isinstance(value, tuple):
+        return tuple(
+            _normalize_config_value(item)
+            for item in value
+        )
+
+    if isinstance(value, np.generic):
+        return value.item()
+
+    return value
+
+
+def _merge_hgp_config(
+    base_config: dict,
+    tuned_config: dict,
+) -> dict:
+    merged = _deep_copy_configuration(
+        base_config
+    )
+
+    for key, value in tuned_config.items():
+        if (
+            isinstance(value, dict)
+            and isinstance(merged.get(key), dict)
+        ):
+            nested = dict(merged[key])
+            nested.update(
+                _normalize_config_value(value)
+            )
+            merged[key] = nested
+        else:
+            merged[key] = _normalize_config_value(
+                value
+            )
+
+    # The current trainer uses Group_ID for aggregation, not as a GP input.
+    merged["group_column"] = "Group_ID"
+    merged["optimizer"] = None
+
+    return merged
+
+
+def load_tuned_hgp_params_by_axis(
+    project_root: Path,
+    selected_splits_by_axis: dict[str, dict],
+) -> dict[str, dict] | None:
+    """
+    Load tuned HGP parameters for the selected best-ranked splits.
+    """
+    tuning_path = _resolve_project_path(
+        project_root=project_root,
+        path=STORED_HGP_TUNING_PATH,
+    )
+
+    if not tuning_path.exists():
+        logger.warning(
+            "HGP hyperparameter tuning result was not found: %s. "
+            "Falling back to hard-coded HGP parameters.",
+            tuning_path,
+        )
+        return None
+
+    tuning_df = pd.read_parquet(
+        tuning_path
+    )
+
+    required_columns = {
+        "target_axis",
+        "split_index",
+        "split_name",
+        "best_model_config",
+    }
+
+    _validate_required_columns(
+        dataframe=tuning_df,
+        required_columns=required_columns,
+        dataframe_name=(
+            "HGP hyperparameter tuning result"
+        ),
+    )
+
+    tuned_params_by_axis: dict[
+        str,
+        dict,
+    ] = {}
+
+    for axis in (
+        "main",
+        "secondary",
+    ):
+        selected_split = (
+            selected_splits_by_axis[axis]
+        )
+
+        axis_df = tuning_df[
+            tuning_df["target_axis"]
+            .astype(str)
+            .eq(axis)
+        ].copy()
+
+        axis_df = axis_df[
+            pd.to_numeric(
+                axis_df["split_index"],
+                errors="raise",
+            )
+            .astype(int)
+            .eq(
+                int(
+                    selected_split[
+                        "split_index"
+                    ]
+                )
+            )
+        ].copy()
+
+        axis_df = axis_df[
+            axis_df["split_name"].astype(str).eq(
+                str(
+                    selected_split[
+                        "split_name"
+                    ]
+                )
+            )
+        ].copy()
+
+        if axis_df.empty:
+            logger.warning(
+                "No tuned HGP parameters match the selected "
+                "best-rank split for axis=%r "
+                "(split_index=%s, split_name=%r). "
+                "Falling back to hard-coded HGP parameters.",
+                axis,
+                selected_split["split_index"],
+                selected_split["split_name"],
+            )
+            return None
+
+        if "selection_score" in axis_df.columns:
+            axis_df = axis_df.sort_values(
+                "selection_score"
+            )
+        elif "test_curve_distance_norm" in axis_df.columns:
+            axis_df = axis_df.sort_values(
+                "test_curve_distance_norm"
+            )
+
+        row = axis_df.iloc[0]
+        best_model_config = row[
+            "best_model_config"
+        ]
+
+        if not isinstance(best_model_config, dict):
+            if isinstance(best_model_config, str):
+                best_model_config = ast.literal_eval(
+                    best_model_config
+                )
+            else:
+                raise TypeError(
+                    "best_model_config must be stored as "
+                    f"a dict or string, got "
+                    f"{type(best_model_config).__name__}."
+                )
+
+        tuned_params_by_axis[axis] = _merge_hgp_config(
+            base_config=DEFAULT_HGP_PARAMS,
+            tuned_config=best_model_config,
+        )
+
+    return tuned_params_by_axis
+
+
+def build_model_params_by_source_from_axis_params(
+    geometry_sources: dict[str, Path],
+    tuned_params_by_axis: dict[str, dict],
+) -> dict[str, dict[str, dict]]:
+    return {
+        source_name: {
+            "main": _deep_copy_configuration(
+                tuned_params_by_axis["main"]
+            ),
+            "secondary": _deep_copy_configuration(
+                tuned_params_by_axis["secondary"]
+            ),
+        }
+        for source_name in geometry_sources
+    }
+
+
 def validate_model_parameters(
     geometry_sources: dict[str, Path],
     model_params_by_source: dict[
@@ -771,10 +994,7 @@ def validate_model_parameters(
     required_model_parameters = {
         "mean_kernel",
         "noise_kernel",
-        "initial_alpha",
         "noise_gp_alpha",
-        "residual_mode",
-        "noise_cv_splits",
         "noise_variance_floor",
         "noise_variance_ceiling",
         "confidence_level",
@@ -990,13 +1210,58 @@ def main() -> None:
         )
     )
 
-    model_params_by_source = (
-        build_model_params_by_source(
-            geometry_sources=(
-                geometry_sources
-            ),
+    if IS_BEST_CONFIG:
+        tuned_params_by_axis = (
+            load_tuned_hgp_params_by_axis(
+                project_root=project_root,
+                selected_splits_by_axis=(
+                    top_splits_by_axis
+                ),
+            )
         )
-    )
+
+        if tuned_params_by_axis is None:
+            model_params_by_source = (
+                build_model_params_by_source(
+                    geometry_sources=(
+                        geometry_sources
+                    ),
+                )
+            )
+        else:
+            for (
+                axis,
+                tuned_params,
+            ) in tuned_params_by_axis.items():
+                logger.info(
+                    "Loaded tuned HGP params | "
+                    "axis=%s | params=%s",
+                    axis,
+                    tuned_params,
+                )
+
+            model_params_by_source = (
+                build_model_params_by_source_from_axis_params(
+                    geometry_sources=(
+                        geometry_sources
+                    ),
+                    tuned_params_by_axis=(
+                        tuned_params_by_axis
+                    ),
+                )
+            )
+    else:
+        logger.info(
+            "IS_BEST_CONFIG=False; using hard-coded "
+            "HGP params."
+        )
+        model_params_by_source = (
+            build_model_params_by_source(
+                geometry_sources=(
+                    geometry_sources
+                ),
+            )
+        )
 
     validate_model_parameters(
         geometry_sources=(
@@ -1022,8 +1287,8 @@ def main() -> None:
                 "mean_kernel=%s | "
                 "noise_kernel=%s | "
                 "confidence=%.3f | "
-                "noise_cv_splits=%s | "
-                "optimizer_restarts=%s",
+                "optimizer=None | "
+                "training_mode=aggregated_group_variance",
                 geometry_source,
                 axis,
                 axis_params[
@@ -1034,12 +1299,6 @@ def main() -> None:
                 ],
                 axis_params[
                     "confidence_level"
-                ],
-                axis_params[
-                    "noise_cv_splits"
-                ],
-                axis_params[
-                    "n_restarts_optimizer"
                 ],
             )
 

@@ -3,11 +3,11 @@ experiment_name: qrf_split_ranking
 paths:
   bending_setups: data/rf_augmented/ui_data/unique_bending_setups.csv
   split_metadata: src/pipeline/ml/qrf/data/various_splits.parquet
-  output_directory: src/pipeline/ml/qrf/result/runs
+  output_directory: src/pipeline/ml/qrf/results/runs
 
   geometry_sources:
-    sensor_augmented: data/rf_augmented/ui_data/final_geometry_sensor_augmented_noise__time_wrapping__scaling__jittering.csv
-    within_group_interpolation: data/rf_augmented/ui_data/final_geometry_within_group_interpolation_raw.csv
+    sensor_augmented: data/rf_augmented/final_geometry_sensor_augmented_noise__time_wrapping__scaling__jittering.parquet
+    within_group_interpolation: data/rf_augmented/final_geometry_within_group_interpolation_raw.parquet
     processed_raw: data/processed/geometry.csv
 
 data:

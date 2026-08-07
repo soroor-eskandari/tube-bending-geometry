@@ -101,8 +101,7 @@ AUGMENTED_DATA_PATH = (
     PROJECT_ROOT
     / "data"
     / "rf_augmented"
-    / "ui_data"
-    / "final_geometry_sensor_augmented_noise__time_wrapping__scaling__jittering.csv"
+    / "final_geometry_sensor_augmented_noise__time_wrapping__scaling__jittering.parquet"
 )
 
 REAL_DATA_PATH = (

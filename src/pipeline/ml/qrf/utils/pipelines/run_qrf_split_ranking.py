@@ -222,7 +222,7 @@ for import_root in (
         )
 
 
-from src.pipeline.ml.qrf.mode.experiments.qrf_pipeline import (
+from src.pipeline.ml.qrf.utils.experiments.qrf_pipeline import (
     load_config,
     run_experiments,
 )

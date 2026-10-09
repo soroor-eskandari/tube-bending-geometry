@@ -61,9 +61,15 @@ def _split_geometry_by_experiment_ids(
     geometry_df: pd.DataFrame,
     train_experiment_ids: list[int],
     test_experiment_ids: list[int],
+    train_group_ids: list[int] | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
-    Create train/test dataframes using explicit Experiment_ID values.
+    Create train/test dataframes for one split.
+
+    Training can be selected by Group_ID so augmented/interpolated
+    synthetic rows from the selected training groups are included.
+    Testing stays selected by explicit original Experiment_ID values,
+    keeping evaluation on observed test curves.
     """
     if "Experiment_ID" not in geometry_df.columns:
         raise KeyError(
@@ -107,11 +113,39 @@ def _split_geometry_by_experiment_ids(
         errors="raise",
     ).astype(int)
 
-    train_df = geometry_df[
-        geometry_df["Experiment_ID"].isin(
-            train_ids
-        )
-    ].copy()
+    if train_group_ids is not None:
+        if "Group_ID" not in geometry_df.columns:
+            raise KeyError(
+                "Geometry data must contain 'Group_ID' when "
+                "train_group_ids are supplied."
+            )
+
+        train_group_set = {
+            int(value)
+            for value in train_group_ids
+        }
+
+        if not train_group_set:
+            raise ValueError(
+                "train_group_ids cannot be empty."
+            )
+
+        geometry_df["Group_ID"] = pd.to_numeric(
+            geometry_df["Group_ID"],
+            errors="raise",
+        ).astype(int)
+
+        train_df = geometry_df[
+            geometry_df["Group_ID"].isin(
+                train_group_set
+            )
+        ].copy()
+    else:
+        train_df = geometry_df[
+            geometry_df["Experiment_ID"].isin(
+                train_ids
+            )
+        ].copy()
 
     test_df = geometry_df[
         geometry_df["Experiment_ID"].isin(
@@ -136,23 +170,37 @@ def _split_geometry_by_experiment_ids(
         test_df["Experiment_ID"].unique()
     )
 
-    missing_train_ids = (
-        train_ids - available_train_ids
-    )
     missing_test_ids = (
         test_ids - available_test_ids
     )
 
-    if missing_train_ids:
-        raise ValueError(
-            "Training experiments absent from the selected "
-            f"geometry source: {sorted(missing_train_ids)}"
+    if train_group_ids is None:
+        missing_train_ids = (
+            train_ids - available_train_ids
         )
+
+        if missing_train_ids:
+            raise ValueError(
+                "Training experiments absent from the selected "
+                f"geometry source: {sorted(missing_train_ids)}"
+            )
 
     if missing_test_ids:
         raise ValueError(
             "Test experiments absent from the selected "
             f"geometry source: {sorted(missing_test_ids)}"
+        )
+
+    leaked_test_ids = set(
+        train_df["Experiment_ID"].unique()
+    ).intersection(test_ids)
+
+    if leaked_test_ids:
+        raise ValueError(
+            "Train/test experiment leakage detected after "
+            "group-based train selection. "
+            f"Overlapping Experiment_ID values: "
+            f"{sorted(leaked_test_ids)}"
         )
 
     return (
@@ -304,6 +352,11 @@ def train_single_model(
             ),
             test_experiment_ids=list(
                 split_config["test_exp"]
+            ),
+            train_group_ids=(
+                list(split_config["train_group_ids"])
+                if "train_group_ids" in split_config
+                else None
             ),
         )
     )
@@ -486,6 +539,24 @@ def train_single_model(
             {
                 int(value)
                 for value in split_config["test_exp"]
+            }
+        ),
+        "train_group_ids": sorted(
+            {
+                int(value)
+                for value in split_config.get(
+                    "train_group_ids",
+                    [],
+                )
+            }
+        ),
+        "test_group_ids": sorted(
+            {
+                int(value)
+                for value in split_config.get(
+                    "test_group_ids",
+                    [],
+                )
             }
         ),
         "model_path": str(model_path),

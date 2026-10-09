@@ -40,12 +40,12 @@ MEAN_ARD_PARAM_BY_FEATURE = {
 
 
 @dataclass
-class HyperParameterTuning:
+class MainHyperParameterTuning:
     """
     Shared HGP hyperparameter-tuning engine.
 
     This class does not decide which axis should be tuned.
-    MainHyperParameterTuning and SecondaryHyperParameterTuning
+    MainMainHyperParameterTuning and SecondaryMainHyperParameterTuning
     call run_axis() explicitly.
     """
 
@@ -2769,7 +2769,7 @@ class HyperParameterTuning:
                 merged[
                     key
                 ] = (
-                    HyperParameterTuning
+                    MainHyperParameterTuning
                     ._deep_merge_dicts(
                         merged[
                             key
@@ -3005,6 +3005,6 @@ class HyperParameterTuning:
         ]
 
 
-HGPHyperParameterTuning = (
-    HyperParameterTuning
+HGPMainHyperParameterTuning = (
+    MainHyperParameterTuning
 )

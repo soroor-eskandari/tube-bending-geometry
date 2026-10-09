@@ -128,6 +128,7 @@ DEFAULT_HGP_PARAMS = {
         ),
     },
     "noise_gp_alpha": 1e-4,
+    "noise_min_repeat_count": 2,
     "residual_variance_epsilon": 1e-8,
     "noise_variance_floor": 1e-6,
     "noise_variance_ceiling": 10.0,
@@ -135,6 +136,8 @@ DEFAULT_HGP_PARAMS = {
     "n_restarts_optimizer": 0,
     "random_state": 1100,
     "group_column": "Group_ID",
+    "ensemble_enabled": False,
+    "ensemble_cv_splits": 5,
 }
 
 
@@ -167,6 +170,7 @@ BEST_HGP_PARAMS_BY_DATASET = {
         },
     },
 }
+
 
 
 # ============================================================
@@ -301,14 +305,16 @@ def _deep_copy_configuration(
 def hgp_training_geometry_sources(
     project_root: Path,
 ) -> dict[str, Path]:
-    """Return all geometry sources used for final HGP training."""
-    source_paths = {
+    """
+    Final HGP training uses one artifact per geometry source.
+    """
+    return {
         "real": (
             project_root
             / "data"
             / "processed"
             / "geometry.csv"
-        ),
+        ).resolve(),
         (
             "sensor_augmented_noise__"
             "time_wrapping__scaling__jittering"
@@ -320,7 +326,7 @@ def hgp_training_geometry_sources(
                 "final_geometry_sensor_augmented_noise__"
                 "time_wrapping__scaling__jittering.parquet"
             )
-        ),
+        ).resolve(),
         "within_group_interpolation_raw": (
             project_root
             / "data"
@@ -329,13 +335,7 @@ def hgp_training_geometry_sources(
                 "final_geometry_within_group_"
                 "interpolation_raw.parquet"
             )
-        ),
-    }
-
-    return {
-        source_name: source_path.resolve()
-        for source_name, source_path
-        in source_paths.items()
+        ).resolve(),
     }
 
 
@@ -405,6 +405,8 @@ def load_top_splits_by_axis(
     required_columns = {
         "split_index",
         "split_name",
+        "train_group_ids",
+        "test_group_ids",
         "train_experiment_ids",
         "test_experiment_ids",
         "qrf_rank_main",
@@ -580,6 +582,20 @@ def load_top_splits_by_axis(
                 ]
             )
         )
+        train_group_ids = (
+            _normalize_stored_experiment_ids(
+                row[
+                    "train_group_ids"
+                ]
+            )
+        )
+        test_group_ids = (
+            _normalize_stored_experiment_ids(
+                row[
+                    "test_group_ids"
+                ]
+            )
+        )
 
         if not train_experiment_ids:
             raise ValueError(
@@ -607,6 +623,20 @@ def load_top_splits_by_axis(
                 f"{sorted(experiment_overlap)}"
             )
 
+        group_overlap = set(
+            train_group_ids
+        ).intersection(
+            test_group_ids
+        )
+
+        if group_overlap:
+            raise ValueError(
+                "Group leakage was found in "
+                f"the rank-1 {axis} split. "
+                f"Overlapping Group_IDs: "
+                f"{sorted(group_overlap)}"
+            )
+
         selected_splits[axis] = {
             "axis": axis,
             "target_column": (
@@ -630,6 +660,12 @@ def load_top_splits_by_axis(
             ),
             "source_score": float(
                 row[score_column]
+            ),
+            "train_group_ids": (
+                train_group_ids
+            ),
+            "test_group_ids": (
+                test_group_ids
             ),
             "train_exp": (
                 train_experiment_ids

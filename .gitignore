@@ -54,6 +54,27 @@ Explore_Result_comparison/
 *.ipynb
 *.yaml
 *.docx
+*.pdf
+*.png
+
+# Static Streamlit dashboard exports
+!data/processed/
+!data/processed/geometry.csv
+!data/processed/processed_bending_setup.csv
+!src/pipeline/ml/qrf/results/
+!src/pipeline/ml/qrf/results/models/
+!src/pipeline/ml/qrf/results/models/**/
+!src/pipeline/ml/qrf/results/models/**/test_predictions.csv
+!src/pipeline/ml/qrf/results/models/**/all_group_predictions.csv
+!src/pipeline/ml/qrf/results/models/**/metrics.csv
+!src/pipeline/ml/qrf/results/models/**/metadata.json
+!src/pipeline/ml/hgp/results/
+!src/pipeline/ml/hgp/results/models/
+!src/pipeline/ml/hgp/results/models/**/
+!src/pipeline/ml/hgp/results/models/**/test_predictions.csv
+!src/pipeline/ml/hgp/results/models/**/all_group_predictions.csv
+!src/pipeline/ml/hgp/results/models/**/metrics.csv
+!src/pipeline/ml/hgp/results/models/**/metadata.json
 
 # PyInstaller
 #  Usually these files are written by a python script from a template

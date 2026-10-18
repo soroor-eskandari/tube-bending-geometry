@@ -21,9 +21,9 @@ dataset if you use it.
 
 ## Stored thesis results
 
-The split search, split ranking and hyperparameter tuning were run once during
-the thesis. Their results are committed, so the final runners reuse them
-instead of recomputing them:
+The split search, hyperparameter tuning and RF augmentation were run once
+during the thesis. Their results are committed, so the final runners reuse
+them instead of recomputing them:
 
 | File | Used by |
 |---|---|
@@ -31,6 +31,8 @@ instead of recomputing them:
 | `src/pipeline/ml/qrf/data/qrf_hyperparameter_tuning_results.parquet` | QRF (tuned hyperparameters) |
 | `src/pipeline/ml/common/data/various_splits.parquet` | HGP (same splits as QRF) |
 | `src/pipeline/ml/hgp/data/hgp_hyperparameter_tuning_results.parquet` | HGP (tuned hyperparameters) |
+| `src/pipeline/rf_augmentation/result/*.csv` | RF feature ranking and selected feature subsets |
+| `data/rf_augmented/final_geometry_*.parquet` | QRF/HGP (augmented geometry) |
 
 ## Setup
 
@@ -42,9 +44,23 @@ cd tube-bending-geometry
 uv sync
 ```
 
-## Running the pipeline
+## Reproducing the thesis results
 
-Run from the repository root, in this order:
+Run from the repository root:
+
+```bash
+uv run python 1_run_data_preprocessor.py       # download raw data, clean → data/processed/
+uv run python 3_1_run_qrf_interval_predictor.py # final QRF models → src/pipeline/ml/qrf/results/models/
+uv run python 3_2_run_hgp_interval_predictor.py # final HGP models → src/pipeline/ml/hgp/results/models/
+```
+
+## Running the full pipeline from scratch
+
+This also reruns the RF feature selection and augmentation (steps 2_1_x).
+It **overwrites** the committed RF and augmented files, and with current
+library versions the subset search selects slightly different features, so
+augmented results will differ from the thesis. Restore the thesis files with
+`git checkout -- src/pipeline/rf_augmentation/result data/rf_augmented`.
 
 ```bash
 uv run python 1_run_data_preprocessor.py                   # download raw data, clean → data/processed/

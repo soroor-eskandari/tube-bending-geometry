@@ -37,23 +37,48 @@ Basic setup with uv
 Stored thesis results (already in the repository)
 ------------------------------------------------
 
-The split search, split ranking and hyperparameter tuning were run once during
-the thesis. Their results are committed, so a new user does NOT need to
-recreate splits or retune models. The final runners read them directly:
+The expensive or non-reproducible experiments were run once during the
+thesis and their results are committed, so a new user does NOT need to
+recreate splits, retune models or regenerate the augmentation.
+
+Split search / ranking and hyperparameter tuning (read by 3_1 and 3_2):
 
     src/pipeline/ml/qrf/data/various_splits.parquet
     src/pipeline/ml/qrf/data/qrf_hyperparameter_tuning_results.parquet
     src/pipeline/ml/common/data/various_splits.parquet
     src/pipeline/ml/hgp/data/hgp_hyperparameter_tuning_results.parquet
 
-Do not delete or regenerate these files unless you intend to redo those
-experiments.
+RF feature selection (outputs of 2_1_1 - 2_1_3, read by 2_1_4 and 2_1_5):
+
+    src/pipeline/rf_augmentation/result/feature_type_rank_*.csv
+    src/pipeline/rf_augmentation/result/bending_feature_rank_*.csv
+    src/pipeline/rf_augmentation/result/greedy_*.csv
+
+Final augmented geometry (output of 2_1_5, read by 3_1 and 3_2):
+
+    data/rf_augmented/final_geometry_within_group_interpolation_raw.parquet
+    data/rf_augmented/final_geometry_sensor_augmented_noise__time_wrapping__scaling__jittering.parquet
+
+Re-running steps 2_1_1 - 2_1_5 OVERWRITES the RF and augmented files above.
+With newer library versions the greedy subset search selects slightly
+different features, so the regenerated augmentation (and therefore the
+augmented QRF/HGP results) will no longer match the thesis. Restore the
+committed versions with:
+
+    git checkout -- src/pipeline/rf_augmentation/result data/rf_augmented
 
 
 Recommended pipeline order
 --------------------------
 
-The normal order is:
+To reproduce the thesis results (uses the stored results above):
+
+    uv run python 1_run_data_preprocessor.py
+    uv run python 3_1_run_qrf_interval_predictor.py
+    uv run python 3_2_run_hgp_interval_predictor.py
+
+To redo the full pipeline from scratch, including the RF augmentation
+(overwrites the stored RF/augmented files, see above):
 
     uv run python 1_run_data_preprocessor.py
     uv run python 2_1_1_run_data_rf_feature_ranker.py
@@ -309,6 +334,8 @@ Purpose:
 What it does:
     - Uses 3_1_run_qrf_interval_predictor.py as the QRF driver.
     - Can automatically regenerate the selected augmented source.
+      This overwrites the stored file in data/rf_augmented/; restore it
+      afterwards with: git checkout -- data/rf_augmented
     - Current source:
           within_group_interpolation_raw
     - Runs a sweep from:
@@ -343,6 +370,8 @@ Purpose:
 What it does:
     - Uses 3_2_run_hgp_interval_predictor.py as the HGP driver.
     - Can automatically regenerate the selected augmented source.
+      This overwrites the stored file in data/rf_augmented/; restore it
+      afterwards with: git checkout -- data/rf_augmented
     - Current source:
           within_group_interpolation_raw
     - Runs a sweep from:
@@ -398,7 +427,13 @@ If final model training is very slow:
 Short version
 -------------
 
-For a fresh full run:
+Reproduce the thesis results:
+
+    uv run python 1_run_data_preprocessor.py
+    uv run python 3_1_run_qrf_interval_predictor.py
+    uv run python 3_2_run_hgp_interval_predictor.py
+
+Full run from scratch (regenerates the augmentation):
 
     uv run python 1_run_data_preprocessor.py
     uv run python 2_1_1_run_data_rf_feature_ranker.py

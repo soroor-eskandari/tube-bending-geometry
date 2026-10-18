@@ -264,3 +264,11 @@ __marimo__/
 !src/pipeline/ml/common/data/various_splits.parquet
 !src/pipeline/ml/hgp/data/
 !src/pipeline/ml/hgp/data/hgp_hyperparameter_tuning_results.parquet
+
+# Stored thesis RF feature selection and augmented geometry (reused by 3_1/3_2)
+!src/pipeline/rf_augmentation/result/
+!src/pipeline/rf_augmentation/result/feature_type_rank_*.csv
+!src/pipeline/rf_augmentation/result/bending_feature_rank_*.csv
+!src/pipeline/rf_augmentation/result/greedy_*.csv
+!data/rf_augmented/final_geometry_within_group_interpolation_raw.parquet
+!data/rf_augmented/final_geometry_sensor_augmented_noise__time_wrapping__scaling__jittering.parquet

@@ -366,17 +366,9 @@ Run:
 Streamlit dashboard
 -------------------
 
-The dashboard is not part of the training pipeline. It displays existing static
-CSV/JSON/model-result files.
-
-Run:
-    uv run streamlit run dashboard.py
-
-Expected data includes:
-    data/processed/geometry.csv
-    data/processed/processed_bending_setup.csv
-    src/pipeline/ml/qrf/results/models/**/test_predictions.csv
-    src/pipeline/ml/hgp/results/models/**/test_predictions.csv
+The dashboard is not part of the training pipeline and is not run locally.
+It is hosted online and displays the static exported results (for example
+data/rf_augmented/ui_data/ and the committed model metrics/predictions).
 
 
 Common troubleshooting

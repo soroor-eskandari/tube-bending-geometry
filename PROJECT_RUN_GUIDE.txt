@@ -19,8 +19,12 @@ Basic setup with uv
    This creates/updates the local .venv environment and installs the project
    dependencies.
 
-3. Make sure the raw input data exists under data/raw/. It is not in git
-   (too large) and must be obtained separately:
+3. Download the raw input data into data/raw/. It is not in git (too large)
+   and is attached to the GitHub release "data-v1":
+
+    uv run python scripts/download_raw_data.py
+
+   This creates:
 
     data/raw/experiments_process_and_results.pkl
     data/raw/unique_bending_setups.csv

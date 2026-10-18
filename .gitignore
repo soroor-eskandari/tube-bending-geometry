@@ -255,3 +255,12 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# Stored thesis results reused by the final QRF/HGP runners
+!src/pipeline/ml/qrf/data/
+!src/pipeline/ml/qrf/data/various_splits.parquet
+!src/pipeline/ml/qrf/data/qrf_hyperparameter_tuning_results.parquet
+!src/pipeline/ml/common/data/
+!src/pipeline/ml/common/data/various_splits.parquet
+!src/pipeline/ml/hgp/data/
+!src/pipeline/ml/hgp/data/hgp_hyperparameter_tuning_results.parquet

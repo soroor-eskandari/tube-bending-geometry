@@ -206,7 +206,7 @@ class RFSubsetFinderPipeline:
                         subset_secondary_size=len(trial_sec),
                         subset_tag=f"greedy_main_step{step}",
                         random_state=1100,
-                        use_mlflow=True,
+                        use_mlflow=False,
                         mlflow_experiment="rf_greedy_search",
                         mlflow_run_name=f"greedy_main_step{step}_{subset_id}",
                         mlflow_tags={
@@ -382,7 +382,7 @@ class RFSubsetFinderPipeline:
                         subset_secondary_size=len(trial_sec),
                         subset_tag=f"greedy_secondary_step{step}",
                         random_state=1100,
-                        use_mlflow=True,
+                        use_mlflow=False,
                         mlflow_experiment="rf_greedy_search",
                         mlflow_run_name=f"greedy_secondary_step{step}_{subset_id}",
                         mlflow_tags={

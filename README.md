@@ -8,7 +8,8 @@ that predict the main- and secondary-axis geometry with prediction intervals:
 - **QRF** – Quantile Random Forest
 - **HGP** – Heteroscedastic Gaussian Process
 
-Results are explored in an online Streamlit dashboard: <!-- TODO: add dashboard URL -->
+Results are explored in the online Streamlit dashboard:
+**<https://tubebendgeometryintervalpredictionvisualisation-bkgn5b7s8vakc9.streamlit.app>**
 
 ## Data
 

@@ -39,7 +39,7 @@ class RFModelTrainer:
         n_splits: int = 5,
         n_estimators: int = 200,
         random_state: int = 42,
-        use_mlflow: bool = True,
+        use_mlflow: bool = False,
         mlflow_tracking_uri: str = None,
         mlflow_experiment: str = None,
         mlflow_run_name: str = None,
@@ -161,11 +161,13 @@ class RFModelTrainer:
                     mlflow.sklearn.log_model(
                         model_main,
                         artifact_path=f"cv_models/fold_{fold}_model_main",
+                        serialization_format="cloudpickle",
                         input_example=X_main_train[:3],
                     )
                     mlflow.sklearn.log_model(
                         model_sec,
                         artifact_path=f"cv_models/fold_{fold}_model_secondary",
+                        serialization_format="cloudpickle",
                         input_example=X_sec_train[:3],
                     )
 
@@ -351,12 +353,14 @@ class RFModelTrainer:
                     mlflow.sklearn.log_model(
                         final_main,
                         artifact_path="model_main_final",
+                        serialization_format="cloudpickle",
                         input_example=X_main[:3],
                         signature=infer_signature(X_main[:10], final_main.predict(X_main[:10])),
                     )
                     mlflow.sklearn.log_model(
                         final_sec,
                         artifact_path="model_secondary_final",
+                        serialization_format="cloudpickle",
                         input_example=X_secondary[:3],
                         signature=infer_signature(X_secondary[:10], final_sec.predict(X_secondary[:10])),
                     )
@@ -365,6 +369,7 @@ class RFModelTrainer:
                     mlflow.sklearn.log_model(
                         best_main_fold_model,
                         artifact_path="model_main_best_fold",
+                        serialization_format="cloudpickle",
                         input_example=X_main[:3],
                     )
 
@@ -372,6 +377,7 @@ class RFModelTrainer:
                     mlflow.sklearn.log_model(
                         best_sec_fold_model,
                         artifact_path="model_secondary_best_fold",
+                        serialization_format="cloudpickle",
                         input_example=X_secondary[:3],
                     )
 

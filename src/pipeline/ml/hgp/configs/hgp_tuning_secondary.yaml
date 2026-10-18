@@ -1,0 +1,287 @@
+# ============================================================
+# HGP SECONDARY-AXIS HYPERPARAMETER TUNING
+# ============================================================
+#
+# Goals:
+#   1. Improve secondary-axis mean prediction.
+#   2. Allow stronger angle-dependent behavior.
+#   3. Reduce excessive smoothing of the mean GP.
+#   4. Allow angle-dependent uncertainty.
+#   5. Avoid selecting wide intervals only for high coverage.
+#
+# Geometry source is forced to "real" by the tuning notebook.
+# ============================================================
+
+
+tuning:
+
+  # ==========================================================
+  # Cross-validation
+  # ==========================================================
+
+  cv_splits: 5
+
+  # Number of joint configurations evaluated.
+  #
+  # The parameter space is intentionally larger around
+  # angle length scales and mean GP regularization.
+  #
+  max_candidates_secondary: 400
+
+  search_random_state: 1100
+
+
+  # ==========================================================
+  # Coverage
+  # ==========================================================
+
+  # Desired coverage corresponding to the final 90% interval.
+  coverage_target: 90.0
+
+  # Hard minimum before other objectives are considered.
+  #
+  # Keep this below the target so that the tuner does not
+  # achieve good coverage simply by making intervals too wide.
+  minimum_coverage: 75.0
+
+
+  # ==========================================================
+  # Objective comparison tolerances
+  # ==========================================================
+
+  # Mean prediction
+  curve_distance_tolerance: 0.005
+  trend_tolerance: 0.005
+  rmse_tolerance: 0.005
+
+  # Interval behavior
+  interval_shape_tolerance: 0.005
+  pinaw_tolerance: 0.005
+
+  # Coverage is expressed in percentage points.
+  coverage_tolerance: 1.0
+  p10_coverage_tolerance: 1.0
+
+
+  # ==========================================================
+  # SECONDARY objective strategies
+  # ==========================================================
+  #
+  # IMPORTANT:
+  # Mean quality is intentionally prioritized in the first
+  # strategies because the current secondary model is too flat.
+  #
+  # minimum_coverage remains first as a feasibility constraint.
+  # ==========================================================
+
+  secondary_objective_orders:
+
+    curve_first:
+      - minimum_coverage
+      - curve_distance_norm
+      - trend_shape_loss
+      - rmse_norm
+      - coverage_error
+      - interval_shape_loss
+      - pinaw
+
+    trend_first:
+      - minimum_coverage
+      - trend_shape_loss
+      - curve_distance_norm
+      - rmse_norm
+      - coverage_error
+      - interval_shape_loss
+      - pinaw
+
+    rmse_first:
+      - minimum_coverage
+      - rmse_norm
+      - curve_distance_norm
+      - trend_shape_loss
+      - coverage_error
+      - interval_shape_loss
+      - pinaw
+
+    balanced_mean:
+      - minimum_coverage
+      - curve_distance_norm
+      - rmse_norm
+      - trend_shape_loss
+      - coverage_error
+      - interval_shape_loss
+      - pinaw
+
+    interval_first:
+      - minimum_coverage
+      - interval_shape_loss
+      - curve_distance_norm
+      - trend_shape_loss
+      - rmse_norm
+      - coverage_error
+      - pinaw
+
+    sharp_interval_first:
+      - minimum_coverage
+      - pinaw
+      - coverage_error
+      - curve_distance_norm
+      - trend_shape_loss
+      - rmse_norm
+      - interval_shape_loss
+
+
+  # ==========================================================
+  # SECONDARY parameter grid
+  # ==========================================================
+
+  secondary_param_grid:
+
+    # --------------------------------------------------------
+    # Mean GP kernel
+    # --------------------------------------------------------
+
+    mean_kernel:
+      - matern_1.5
+      - matern_2.5
+
+
+    # --------------------------------------------------------
+    # Mean GP alpha
+    # --------------------------------------------------------
+    #
+    # Current winners frequently use 0.001 or larger.
+    # Smaller values are added to allow the GP to follow
+    # the observed secondary-axis curves more closely.
+    # --------------------------------------------------------
+
+    mean_gp_alpha:
+      - 0.00005
+      - 0.0001
+      - 0.0005
+      - 0.001
+      - 0.005
+      - 0.01
+
+
+    # --------------------------------------------------------
+    # Angle ARD length scale
+    # --------------------------------------------------------
+    #
+    # MOST IMPORTANT SEARCH DIMENSION.
+    #
+    # Previous values around 6.0 can strongly smooth the
+    # angle dimension and produce nearly flat curves.
+    #
+    # Search is therefore concentrated toward smaller values.
+    # --------------------------------------------------------
+
+    mean_ls_angle:
+      - 0.15
+      - 0.30
+      - 0.50
+      - 0.80
+      - 1.00
+      - 1.50
+      - 2.50
+      - 4.00
+
+
+    # --------------------------------------------------------
+    # Setup-parameter ARD length scales
+    # --------------------------------------------------------
+    #
+    # Keep these grids relatively compact in this tuning stage.
+    # We want candidate capacity to be spent primarily on
+    # angle sensitivity rather than an enormous ARD search.
+    # --------------------------------------------------------
+
+    mean_ls_collet_boost:
+      - 0.5
+      - 1.5
+      - 4.0
+
+    mean_ls_pressure_die_distance:
+      - 0.5
+      - 1.5
+      - 4.0
+
+    mean_ls_mandrel_retraction_timing:
+      - 0.5
+      - 1.5
+      - 4.0
+
+    mean_ls_pressure_die_boost:
+      - 0.5
+      - 1.5
+      - 4.0
+
+    mean_ls_clamp_die_lateral_position:
+      - 0.5
+      - 1.5
+      - 4.0
+
+    mean_ls_mandrel_position:
+      - 0.5
+      - 1.5
+      - 4.0
+
+
+    # --------------------------------------------------------
+    # Mean kernel amplitude
+    # --------------------------------------------------------
+
+    constant_value:
+      - 0.3
+      - 1.0
+      - 3.0
+
+
+    # ========================================================
+    # Noise GP
+    # ========================================================
+    #
+    # Keep the noise model active, but use a smaller search
+    # than the mean GP in this stage.
+    # ========================================================
+
+    noise_kernel:
+      - matern_1.5
+      - matern_2.5
+
+
+    # --------------------------------------------------------
+    # Noise GP angle/smoothness length scale
+    # --------------------------------------------------------
+    #
+    # Smaller values allow uncertainty to change locally
+    # with angle instead of producing almost constant width.
+    # --------------------------------------------------------
+
+    noise_initial_length_scale:
+      - 0.15
+      - 0.30
+      - 0.50
+      - 0.80
+      - 1.50
+      - 3.00
+
+
+    # --------------------------------------------------------
+    # Noise GP regularization
+    # --------------------------------------------------------
+
+    noise_gp_alpha:
+      - 0.0001
+      - 0.001
+      - 0.005
+
+
+    # --------------------------------------------------------
+    # Minimum predicted noise variance
+    # --------------------------------------------------------
+
+    noise_variance_floor:
+      - 0.000001
+      - 0.00001
+      - 0.0001

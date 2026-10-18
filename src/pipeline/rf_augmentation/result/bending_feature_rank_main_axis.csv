@@ -1,0 +1,7 @@
+rank,target,bending_feature,importance
+1,main_axis,Mandrel retraction timing,0.76838912191946
+2,main_axis,Collet boost,0.17003503808386083
+3,main_axis,Pressure-die distance,0.03546632251054511
+4,main_axis,Mandrel position,0.01723071242377619
+5,main_axis,Pressure-die boost,0.008264134170790763
+6,main_axis,Clamp-die lateral position,0.0006146708915671944

@@ -35,7 +35,7 @@ class RFModelTrainer:
         paper_name: str = "paper_model",
         n_estimators: int = 200,
         random_state: int = 42,
-        use_mlflow: bool = True,
+        use_mlflow: bool = False,
         mlflow_tracking_uri: str = None,
         mlflow_experiment: str = None,
         mlflow_run_name: str = None,
@@ -174,6 +174,7 @@ class RFModelTrainer:
                 mlflow.sklearn.log_model(
                     model_main,
                     artifact_path="model_main",
+                    serialization_format="cloudpickle",
                     input_example=X_main[:3],
                     signature=infer_signature(X_main[:10], model_main.predict(X_main[:10])),
                 )
@@ -181,6 +182,7 @@ class RFModelTrainer:
                 mlflow.sklearn.log_model(
                     model_sec,
                     artifact_path="model_secondary",
+                    serialization_format="cloudpickle",
                     input_example=X_secondary[:3],
                     signature=infer_signature(X_secondary[:10], model_sec.predict(X_secondary[:10])),
                 )

@@ -1,0 +1,450 @@
+Tube Bending Geometry Project Run Guide
+======================================
+
+This file explains the main runner scripts in the project root and the usual
+order for running the pipeline.
+
+Run all commands from the project root (the folder that contains this file
+and pyproject.toml).
+
+Basic setup with uv
+-------------------
+
+1. Install uv if it is not already installed.
+
+2. Sync the project environment from pyproject.toml:
+
+    uv sync
+
+   This creates/updates the local .venv environment and installs the project
+   dependencies.
+
+3. Raw input data is downloaded automatically. On first run,
+   1_run_data_preprocessor.py downloads the raw experiment data (~800 MB)
+   from the public tube bending dataset (https://github.com/zeyneddinoz/tubebend),
+   verifies its checksum, and copies the committed bending setup groups:
+
+    data/raw/experiments_process_and_results.pkl
+    data/raw/unique_bending_setups.csv
+
+   Later runs reuse the files if they already exist.
+
+4. Run scripts through uv from the project root, for example:
+
+    uv run python 1_run_data_preprocessor.py
+
+
+Stored thesis results (already in the repository)
+------------------------------------------------
+
+The expensive or non-reproducible experiments were run once during the
+thesis and their results are committed, so a new user does NOT need to
+recreate splits, retune models or regenerate the augmentation.
+
+Split search / ranking and hyperparameter tuning (read by 3_1 and 3_2):
+
+    src/pipeline/ml/qrf/data/various_splits.parquet
+    src/pipeline/ml/qrf/data/qrf_hyperparameter_tuning_results.parquet
+    src/pipeline/ml/common/data/various_splits.parquet
+    src/pipeline/ml/hgp/data/hgp_hyperparameter_tuning_results.parquet
+
+RF feature selection (outputs of 2_1_1 - 2_1_3, read by 2_1_4 and 2_1_5):
+
+    src/pipeline/rf_augmentation/result/feature_type_rank_*.csv
+    src/pipeline/rf_augmentation/result/bending_feature_rank_*.csv
+    src/pipeline/rf_augmentation/result/greedy_*.csv
+
+Final augmented geometry (output of 2_1_5, read by 3_1 and 3_2):
+
+    data/rf_augmented/final_geometry_within_group_interpolation_raw.parquet
+    data/rf_augmented/final_geometry_sensor_augmented_noise__time_wrapping__scaling__jittering.parquet
+
+Re-running steps 2_1_1 - 2_1_5 OVERWRITES the RF and augmented files above.
+With newer library versions the greedy subset search selects slightly
+different features, so the regenerated augmentation (and therefore the
+augmented QRF/HGP results) will no longer match the thesis. Restore the
+committed versions with:
+
+    git checkout -- src/pipeline/rf_augmentation/result data/rf_augmented
+
+
+Recommended pipeline order
+--------------------------
+
+To reproduce the thesis results (uses the stored results above):
+
+    uv run python 1_run_data_preprocessor.py
+    uv run python 3_1_run_qrf_interval_predictor.py
+    uv run python 3_2_run_hgp_interval_predictor.py
+
+To redo the full pipeline from scratch, including the RF augmentation
+(overwrites the stored RF/augmented files, see above):
+
+    uv run python 1_run_data_preprocessor.py
+    uv run python 2_1_1_run_data_rf_feature_ranker.py
+    uv run python 2_1_2_run_data_rf_bending_feature_ranker.py
+    uv run python 2_1_3_run_data_rf_feature_subset_search.py
+    uv run python 2_1_4_run_data_rf_augmentator.py
+    uv run python 2_1_5_run_data_augmented_generator.py
+    uv run python 3_1_run_qrf_interval_predictor.py
+    uv run python 3_2_run_hgp_interval_predictor.py
+
+The RF augmentation scripts in step 2 prepare augmented geometry sources.
+The QRF and HGP scripts in step 3 train and evaluate the final interval
+prediction models.
+
+
+1_run_data_preprocessor.py
+--------------------------
+
+Purpose:
+    Cleans and preprocesses the raw data.
+
+What it does:
+    - Downloads data/raw/experiments_process_and_results.pkl if missing.
+    - Uses DataPreprocessPipeline.
+    - Reads raw project data from data/.
+    - Removes failed experiments:
+          1, 48, 166
+    - Handles missing values with nan_handler=True.
+    - Writes cleaned/processed CSV files to:
+          data/processed/
+
+Important output:
+    data/processed/geometry.csv
+    data/processed/processed_bending_setup.csv
+
+Run:
+    uv run python 1_run_data_preprocessor.py
+
+Run this first. Most later scripts depend on the processed geometry data.
+
+
+2_1_1_run_data_rf_feature_ranker.py
+-----------------------------------
+
+Purpose:
+    Finds the importance/ranking of geometry features using a Random Forest
+    based pipeline.
+
+What it does:
+    - Uses RFRankerPipeline.
+    - Analyzes which input features are useful for predicting tube bending
+      geometry targets.
+    - Stores ranking outputs inside the RF augmentation result area.
+
+Run:
+    uv run python 2_1_1_run_data_rf_feature_ranker.py
+
+Use this before choosing feature subsets for augmentation.
+
+
+2_1_2_run_data_rf_bending_feature_ranker.py
+-------------------------------------------
+
+Purpose:
+    Finds/ranks the bending setup features using a Random Forest based
+    pipeline.
+
+What it does:
+    - Uses RFBendingFeatureRankerPipeline.
+    - Focuses on bending-machine/setup variables.
+    - Helps identify which bending setup parameters matter most.
+
+Run:
+    uv run python 2_1_2_run_data_rf_bending_feature_ranker.py
+
+
+2_1_3_run_data_rf_feature_subset_search.py
+------------------------------------------
+
+Purpose:
+    Searches for a good subset of features for the RF augmentation model.
+
+What it does:
+    - Uses RFSubsetFinderPipeline.
+    - Runs a greedy feature subset search.
+    - Uses top_k_feature=23.
+    - Writes results to:
+          src/pipeline/rf_augmentation/result/
+
+Run:
+    uv run python 2_1_3_run_data_rf_feature_subset_search.py
+
+This step helps decide which features should be used by the augmentation model.
+
+
+2_1_4_run_data_rf_augmentator.py
+--------------------------------
+
+Purpose:
+    Trains the RF-based augmentation model.
+
+What it does:
+    - Uses RFAugmentationPipeline.
+    - Trains the model used later to generate augmented geometry data.
+    - Writes RF augmentation artifacts to:
+          data/rf_augmented/
+    - Current configuration:
+          include_all_features = False
+          sensor_augmentation_modes = ["raw"]
+          use_mlflow = False
+
+Run:
+    uv run python 2_1_4_run_data_rf_augmentator.py
+
+Run this before generating final augmented samples.
+
+
+2_1_5_run_data_augmented_generator.py
+-------------------------------------
+
+Purpose:
+    Generates new augmented geometry samples using the trained RF augmentation
+    model.
+
+What it does:
+    - Uses RFDataGeneratorPipeline.
+    - Generates n_new_samples=15 per configuration.
+    - Runs these feature sampling modes:
+          within-group-interpolation
+          sensor-augmented
+    - Uses raw cleaned sensor data:
+          sensor_augmentation_modes = ["raw"]
+    - Uses sensor_noise_snr_db=40.0.
+    - Writes generated geometry files to:
+          data/rf_augmented/
+    - Exports extra CSV files for the Streamlit UI to:
+          data/rf_augmented/ui_data/
+
+Important outputs:
+    data/rf_augmented/final_geometry_within_group_interpolation_raw.parquet
+    data/rf_augmented/final_geometry_sensor_augmented_*.parquet
+    data/rf_augmented/ui_data/manifest.json
+    data/rf_augmented/ui_data/unique_bending_setups.csv
+
+Run:
+    uv run python 2_1_5_run_data_augmented_generator.py
+
+Run this before final QRF/HGP training, because the final model scripts expect
+the augmented geometry files to exist.
+
+
+3_1_run_qrf_interval_predictor.py
+---------------------------------
+
+Purpose:
+    Trains and evaluates the final QRF interval prediction models.
+
+QRF means:
+    Quantile Random Forest.
+
+What it does:
+    - Loads geometry sources:
+          real
+          sensor_augmented_noise__time_wrapping__scaling__jittering
+          within_group_interpolation_raw
+    - Validates that all configured geometry files exist.
+    - Loads the best stored QRF split for each target axis:
+          main
+          secondary
+    - Loads the stored tuned QRF hyperparameters (required file).
+    - Trains final QRF models for both target axes.
+    - Saves models, predictions, metrics, and metadata under:
+          src/pipeline/ml/qrf/results/models/
+
+Main feature columns:
+    Group_ID
+    Angle[degree]ORDistance[mm]
+
+Excluded experiments:
+    1, 48, 166
+
+Important inputs:
+    data/processed/geometry.csv
+    data/rf_augmented/final_geometry_within_group_interpolation_raw.parquet
+    data/rf_augmented/final_geometry_sensor_augmented_noise__time_wrapping__scaling__jittering.parquet
+    data/rf_augmented/ui_data/unique_bending_setups.csv
+    src/pipeline/ml/qrf/data/various_splits.parquet
+    src/pipeline/ml/qrf/data/qrf_hyperparameter_tuning_results.parquet
+
+Run:
+    uv run python 3_1_run_qrf_interval_predictor.py
+
+
+3_2_run_hgp_interval_predictor.py
+---------------------------------
+
+Purpose:
+    Trains and evaluates the final HGP interval prediction models.
+
+HGP means:
+    Heteroscedastic Gaussian Process.
+
+What it does:
+    - Loads the same main geometry sources as the QRF final runner:
+          real
+          sensor_augmented_noise__time_wrapping__scaling__jittering
+          within_group_interpolation_raw
+    - Loads stored Top-1 splits for main and secondary axes.
+    - Loads tuned HGP hyperparameters when available.
+    - Otherwise uses the default/hard-coded HGP configuration.
+    - Trains final HGP models for both axes.
+    - Saves models, predictions, metrics, and metadata under:
+          src/pipeline/ml/hgp/results/models/
+
+Main feature columns:
+    Angle[degree]ORDistance[mm]
+    Collet boost
+    Pressure-die distance
+    Mandrel retraction timing
+    Pressure-die boost
+    Clamp-die lateral position
+    Mandrel position
+
+Excluded experiments:
+    1, 48, 166
+
+Important inputs:
+    data/processed/geometry.csv
+    data/rf_augmented/final_geometry_within_group_interpolation_raw.parquet
+    data/rf_augmented/final_geometry_sensor_augmented_noise__time_wrapping__scaling__jittering.parquet
+    data/rf_augmented/ui_data/unique_bending_setups.csv
+    src/pipeline/ml/common/data/various_splits.parquet
+    src/pipeline/ml/hgp/data/hgp_hyperparameter_tuning_results.parquet
+
+Run:
+    uv run python 3_2_run_hgp_interval_predictor.py
+
+
+Extra experiment runners
+------------------------
+
+These files are not numbered, but they are related to the final thesis
+experiments.
+
+
+run_qrf_experiments_per_group.py
+--------------------------------
+
+Purpose:
+    Studies how QRF performance changes when the number of training experiments
+    per group increases.
+
+What it does:
+    - Uses 3_1_run_qrf_interval_predictor.py as the QRF driver.
+    - Can automatically regenerate the selected augmented source.
+      This overwrites the stored file in data/rf_augmented/; restore it
+      afterwards with: git checkout -- data/rf_augmented
+    - Current source:
+          within_group_interpolation_raw
+    - Runs a sweep from:
+          MIN_EXPERIMENTS_PER_GROUP = 1
+      to:
+          MAX_EXPERIMENTS_PER_GROUP = 25
+    - For each N, selects N experiments from each training group.
+    - Real experiments are placed first, then augmented experiments.
+    - Runs QRF for both target axes:
+          main
+          secondary
+    - Extracts metrics:
+          r2, mse, rmse, mae, std, coverage, interval_width, bias
+    - Stores the final table at:
+          ml_result/experiments_per_group/qrf_experiments_per_group.parquet
+
+Run:
+    uv run python run_qrf_experiments_per_group.py
+
+Use this after the preprocessing and RF augmentation pipeline is working.
+It is more of an analysis/sensitivity experiment than the basic final model
+training step.
+
+
+run_hgp_experiments_per_group.py
+--------------------------------
+
+Purpose:
+    Studies how HGP performance changes when the number of training experiments
+    per group increases.
+
+What it does:
+    - Uses 3_2_run_hgp_interval_predictor.py as the HGP driver.
+    - Can automatically regenerate the selected augmented source.
+      This overwrites the stored file in data/rf_augmented/; restore it
+      afterwards with: git checkout -- data/rf_augmented
+    - Current source:
+          within_group_interpolation_raw
+    - Runs a sweep from:
+          MIN_EXPERIMENTS_PER_GROUP = 1
+      to:
+          MAX_EXPERIMENTS_PER_GROUP = 25
+    - For each N, selects N experiments from each training group.
+    - Keeps the test experiments fixed from the stored best split.
+    - Runs HGP for both target axes:
+          main
+          secondary
+    - Extracts metrics:
+          r2, mse, rmse, mae, std, coverage, interval_width, bias
+    - Stores the final table at:
+          ml_result/experiments_per_group/hgp_experiments_per_group_hgp.parquet
+
+Run:
+    uv run python run_hgp_experiments_per_group.py
+
+
+Streamlit dashboard
+-------------------
+
+The dashboard is not part of the training pipeline and is not run locally.
+It is hosted online and displays the static exported results (for example
+data/rf_augmented/ui_data/ and the committed model metrics/predictions).
+
+
+Common troubleshooting
+----------------------
+
+If a script says a file is missing:
+    - Check whether the previous pipeline step has been run.
+    - Check that you are running from the project root.
+    - Check that the generated augmented files exist in data/rf_augmented/.
+
+If QRF or HGP cannot find augmented geometry:
+    - Run:
+          uv run python 2_1_5_run_data_augmented_generator.py
+
+If the UI cannot find bending setup data:
+    - Make sure this file exists:
+          data/rf_augmented/ui_data/unique_bending_setups.csv
+    - It is exported by:
+          uv run python 2_1_5_run_data_augmented_generator.py
+
+If final model training is very slow:
+    - QRF/HGP final training can be computationally heavier than preprocessing.
+    - The per-group experiment runners are even heavier because they train many
+      models for N = 1 to 25.
+
+
+Short version
+-------------
+
+Reproduce the thesis results:
+
+    uv run python 1_run_data_preprocessor.py
+    uv run python 3_1_run_qrf_interval_predictor.py
+    uv run python 3_2_run_hgp_interval_predictor.py
+
+Full run from scratch (regenerates the augmentation):
+
+    uv run python 1_run_data_preprocessor.py
+    uv run python 2_1_1_run_data_rf_feature_ranker.py
+    uv run python 2_1_2_run_data_rf_bending_feature_ranker.py
+    uv run python 2_1_3_run_data_rf_feature_subset_search.py
+    uv run python 2_1_4_run_data_rf_augmentator.py
+    uv run python 2_1_5_run_data_augmented_generator.py
+    uv run python 3_1_run_qrf_interval_predictor.py
+    uv run python 3_2_run_hgp_interval_predictor.py
+
+For experiments-per-group analysis:
+
+    uv run python run_qrf_experiments_per_group.py
+    uv run python run_hgp_experiments_per_group.py

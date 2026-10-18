@@ -19,6 +19,9 @@ class DataLoader:
         df_sensor: Optional[pd.DataFrame] = None,
         df_movement: Optional[pd.DataFrame] = None,
         df_bending: Optional[pd.DataFrame] = None,
+        df_geometry: Optional[pd.DataFrame] = None,
+        df_machine_and_movement: Optional[pd.DataFrame] = None,
+        df_processed_bending_setup: Optional[pd.DataFrame] = None,
     ) -> None:
         """
         Initialize DataLoader with optional DataFrames.
@@ -40,6 +43,9 @@ class DataLoader:
             "df_sensor": df_sensor,
             "df_movement": df_movement,
             "df_bending": df_bending,
+            "df_geometry": df_geometry,
+            "df_machine_and_movement": df_machine_and_movement,
+            "df_processed_bending_setup": df_processed_bending_setup,
         }
 
         self._save_available()

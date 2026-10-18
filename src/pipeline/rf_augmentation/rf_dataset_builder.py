@@ -21,6 +21,7 @@ class RFTrainingDatasetBuilder:
         main_selected_features: list | None,
         secondary_selected_features: list | None,
         return_experiment_ids: bool = False,
+        include_bending_features: bool = True,
     ):
         if main_selected_features is not None:
             main_selected_features = set(main_selected_features)
@@ -43,19 +44,24 @@ class RFTrainingDatasetBuilder:
             tag="SECONDARY"
         )
 
-        # -------------------------
-        # Prepare bending features 
-        # -------------------------
-        X_bending_df = bending_df.copy()
+        if include_bending_features:
+            # -------------------------
+            # Prepare bending features
+            # -------------------------
+            X_bending_df = bending_df.copy()
 
-        if "Experiment_ID" not in X_bending_df.columns:
-            raise ValueError("bending_df must contain 'Experiment_ID'")
-        
-        # -------------------------
-        # Merge bending features
-        # -------------------------
-        X_main_df = X_main_df.merge(X_bending_df, on="Experiment_ID", how="left")
-        X_secondary_df = X_secondary_df.merge(X_bending_df, on="Experiment_ID", how="left")
+            if "Experiment_ID" not in X_bending_df.columns:
+                raise ValueError("bending_df must contain 'Experiment_ID'")
+
+            # -------------------------
+            # Merge bending features
+            # -------------------------
+            X_main_df = X_main_df.merge(X_bending_df, on="Experiment_ID", how="left")
+            X_secondary_df = X_secondary_df.merge(
+                X_bending_df,
+                on="Experiment_ID",
+                how="left",
+            )
 
         # Fill missing values (important)
         X_main_df = X_main_df.fillna(0.0)
@@ -184,9 +190,9 @@ class RFTrainingDatasetBuilder:
             "energy": np.sum(signal ** 2),
             "rms": np.sqrt(np.mean(signal ** 2)),
             "sum": np.sum(signal),
-            "mean_abs": np.mean(np.abs(signal)),
+            "abs": np.max(np.abs(signal)),
 
-            "variance": np.var(signal),
+            "var": np.var(signal),
             "mad": np.mean(np.abs(signal - mean_val)),
             "coeff_var": std_val / mean_val if mean_val != 0 else 0.0,
 
@@ -195,12 +201,13 @@ class RFTrainingDatasetBuilder:
             "p75": np.percentile(signal, 75),
             "p90": np.percentile(signal, 90),
 
-            "zero_crossings": np.sum(np.diff(np.sign(signal)) != 0),
-            "peak_count": np.sum(
+            "crossings": np.sum(np.diff(np.sign(signal)) != 0),
+            "peaks": np.sum(
                 (signal[1:-1] > signal[:-2]) &
                 (signal[1:-1] > signal[2:])
             ),
-            "slope_mean": np.mean(diff),
+            "diff": np.mean(np.abs(diff)),
+            "length": len(signal),
         }
 
     # ============================================================

@@ -283,7 +283,7 @@ class RFGroupFeatureSelector:
         )
 
         use_reference_pool = (
-            n_original == 1
+            n_original <= 2
             and X_main_reference is not None
             and X_secondary_reference is not None
             and X_main_reference.shape[0] > 0
@@ -291,7 +291,6 @@ class RFGroupFeatureSelector:
         )
 
         if use_reference_pool:
-            n_reference = X_main_reference.shape[0]
             right_indices = RFGroupFeatureSelector._choose_diverse_pair_indices(
                 left_main=X_main[left_indices],
                 left_secondary=X_secondary[left_indices],

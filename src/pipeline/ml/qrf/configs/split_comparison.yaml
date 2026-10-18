@@ -1,0 +1,43 @@
+experiment_name: qrf_split_comparison
+
+paths:
+  bending_setups: data/rf_augmented/ui_data/unique_bending_setups.csv
+  split_metadata: src/pipeline/ml/qrf/data/various_splits.parquet
+  geometry_data: data/processed/geometry.csv
+  output_directory: src/pipeline/ml/qrf/results/runs
+
+  geometry_sources:
+    sensor_augmented: data/rf_augmented/final_geometry_sensor_augmented_noise__time_wrapping__scaling__jittering.parquet
+    within_group_interpolation: data/rf_augmented/final_geometry_within_group_interpolation_raw.parquet
+    processed_raw: data/processed/geometry.csv
+
+data:
+  excluded_experiments: [1, 48, 166]
+
+features:
+  input_columns:
+    - Group_ID
+    - Angle[degree]ORDistance[mm]
+
+  target_columns:
+    main: Main-axis [mm]
+    secondary: Secondary-axis [mm]
+
+model:
+  max_depth: 20
+  min_samples_leaf: 1
+  min_samples_split: 2
+  max_features: 1.0
+  bootstrap: true
+  random_state: 1100
+  lower_quantile: 0.05
+  upper_quantile: 0.95
+  n_jobs: -1
+
+search:
+  split_indices: [1, 2, 3, 18, 19, 20]
+  n_estimators: [500]
+  axes: [main, secondary]
+
+output:
+  save_predictions: true

@@ -1,4 +1,16 @@
 streamlit
 matplotlib
-numpy
 pandas
+numpy
+plotly
+pyarrow
+scikit-learn
+scipy
+joblib
+mlflow
+PyMuPDF
+pytest
+pyyaml
+quantile-forest
+seaborn
+tsfel

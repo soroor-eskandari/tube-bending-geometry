@@ -104,6 +104,26 @@ class RFSignalSelectionRecorder:
         feature_sampling_mode = selection_details.get("feature_sampling_mode", "")
         alpha_min = selection_details.get("alpha_min", "")
         alpha_max = selection_details.get("alpha_max", "")
+        sparse_reference_group_id = selection_details.get(
+            "sparse_reference_group_id",
+            "",
+        )
+        sparse_reference_experiment_ids = selection_details.get(
+            "sparse_reference_experiment_ids",
+            "",
+        )
+        sparse_reference_changed_feature = selection_details.get(
+            "sparse_reference_changed_feature",
+            "",
+        )
+        sparse_reference_target_value = selection_details.get(
+            "sparse_reference_target_value",
+            "",
+        )
+        sparse_reference_value = selection_details.get(
+            "sparse_reference_value",
+            "",
+        )
 
         for sample_idx in range(selected_values.shape[0]):
             sampled_row_idx = int(sampled_indices[sample_idx])
@@ -156,6 +176,13 @@ class RFSignalSelectionRecorder:
                     "feature_sampling_mode": feature_sampling_mode,
                     "alpha_min": alpha_min,
                     "alpha_max": alpha_max,
+                    "sparse_reference_group_id": sparse_reference_group_id,
+                    "sparse_reference_experiment_ids": sparse_reference_experiment_ids,
+                    "sparse_reference_changed_feature": (
+                        sparse_reference_changed_feature
+                    ),
+                    "sparse_reference_target_value": sparse_reference_target_value,
+                    "sparse_reference_value": sparse_reference_value,
                 })
 
         return records

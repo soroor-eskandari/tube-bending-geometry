@@ -1,0 +1,14 @@
+axis,step,added_feature,accepted_subset,selection_score,improvement,patience_counter,is_global_best
+main,0,skew,['skew'],0.9381038357880579,inf,0,True
+secondary,0,sum,['sum'],0.8292645700020687,inf,0,True
+main,1,abs,"['skew', 'abs']",0.9402175656625692,0.0021137298745113053,0,True
+secondary,1,median,"['sum', 'median']",0.8430256999952086,0.013761129993139942,0,True
+main,2,diff,"['skew', 'abs', 'diff']",0.9401687497263377,-4.881593623151659e-05,1,False
+secondary,2,p75,"['sum', 'median', 'p75']",0.8525905656868756,0.009564865691667035,0,True
+main,3,crossings,"['skew', 'abs', 'diff', 'crossings']",0.9420694586455945,0.001900708919256866,0,True
+secondary,3,peaks,"['sum', 'median', 'p75', 'peaks']",0.8634442494541167,0.010853683767241051,0,True
+main,4,p90,"['skew', 'abs', 'diff', 'crossings', 'p90']",0.9425992947456027,0.0005298361000081186,1,True
+secondary,4,p90,"['sum', 'median', 'p75', 'peaks', 'p90']",0.8645906064142032,0.0011463569600864698,0,True
+main,5,min,"['skew', 'abs', 'diff', 'crossings', 'p90', 'min']",0.9412843555150308,-0.0013149392305719099,2,False
+secondary,5,crossings,"['sum', 'median', 'p75', 'peaks', 'p90', 'crossings']",0.8654726107757529,0.0008820043615497264,1,True
+secondary,6,p25,"['sum', 'median', 'p75', 'peaks', 'p90', 'crossings', 'p25']",0.864417760197941,-0.00105485057781185,2,False

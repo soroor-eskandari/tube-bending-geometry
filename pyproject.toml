@@ -1,0 +1,25 @@
+[project]
+name = "tube-bending-geometry"
+version = "0.1.0"
+description = "Thesis pipeline and Streamlit dashboard for rotary tube bending geometry interval prediction."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "joblib",
+    "matplotlib",
+    "mlflow",
+    "numpy",
+    "pandas",
+    "plotly",
+    "pyarrow",
+    "pyyaml",
+    "quantile-forest",
+    "scikit-learn",
+    "scipy",
+    "seaborn",
+    "streamlit",
+    "tsfel",
+]
+
+[tool.uv]
+package = false

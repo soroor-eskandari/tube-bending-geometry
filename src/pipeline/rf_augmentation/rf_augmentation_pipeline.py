@@ -79,25 +79,58 @@ class RFAugmentationPipeline:
             best_secondary_row = None
             main_top_features = None
             secondary_top_features = None
+            include_bending_features = True
         else:
-            best_subset_combo = pd.read_csv(
-                result_dir / "greedy_search_results.csv"
-            )
+            include_bending_features = True
+            best_subsets_path = result_dir / "greedy_best_subsets.csv"
+            search_results_path = result_dir / "greedy_search_results.csv"
 
-            # --- BEST MAIN ---
-            sorted_main = best_subset_combo.sort_values(
-                by="r2_main_best", ascending=False
-            )
-            best_main_row = sorted_main.iloc[0]
+            if best_subsets_path.exists():
+                best_subsets = pd.read_csv(best_subsets_path)
+                best_main_row = best_subsets[best_subsets["axis"] == "main"].iloc[0]
+                best_secondary_row = best_subsets[
+                    best_subsets["axis"] == "secondary"
+                ].iloc[0]
 
-            # --- BEST SECONDARY ---
-            sorted_secondary = best_subset_combo.sort_values(
-                by="r2_secondary_best", ascending=False
-            )
-            best_secondary_row = sorted_secondary.iloc[0]
+                main_top_features = ast.literal_eval(best_main_row["best_subset"])
+                secondary_top_features = ast.literal_eval(
+                    best_secondary_row["best_subset"]
+                )
+            else:
+                best_subset_combo = pd.read_csv(search_results_path)
 
-            main_top_features = ast.literal_eval(best_main_row["main_subset"])
-            secondary_top_features = ast.literal_eval(best_secondary_row["secondary_subset"])
+                if "r2_main_best" in best_subset_combo.columns:
+                    sorted_main = best_subset_combo.sort_values(
+                        by="r2_main_best",
+                        ascending=False,
+                    )
+                    sorted_secondary = best_subset_combo.sort_values(
+                        by="r2_secondary_best",
+                        ascending=False,
+                    )
+                else:
+                    sorted_main = (
+                        best_subset_combo[best_subset_combo["axis"] == "main"]
+                        .sort_values(by="r2_main", ascending=False)
+                    )
+                    sorted_secondary = (
+                        best_subset_combo[best_subset_combo["axis"] == "secondary"]
+                        .sort_values(by="r2_secondary", ascending=False)
+                    )
+
+                best_main_row = sorted_main.iloc[0]
+                best_secondary_row = sorted_secondary.iloc[0]
+
+                main_top_features = ast.literal_eval(best_main_row["main_subset"])
+                secondary_top_features = ast.literal_eval(
+                    best_secondary_row["secondary_subset"]
+                )
+
+            logger.info(
+                "Using ranked statistical feature subsets | main=%s | secondary=%s",
+                main_top_features,
+                secondary_top_features,
+            )
 
         # ============================================================
         # PREPROCESS
@@ -147,6 +180,7 @@ class RFAugmentationPipeline:
             main_selected_features=main_top_features,
             secondary_selected_features=secondary_top_features,
             return_experiment_ids=True,
+            include_bending_features=include_bending_features,
         )
 
         X_main_test, X_sec_test, Y_main_test, Y_sec_test, _, _, test_experiment_ids = RFTrainingDatasetBuilder.build(
@@ -156,6 +190,7 @@ class RFAugmentationPipeline:
             main_selected_features=main_top_features,
             secondary_selected_features=secondary_top_features,
             return_experiment_ids=True,
+            include_bending_features=include_bending_features,
         )
 
         # ============================================================

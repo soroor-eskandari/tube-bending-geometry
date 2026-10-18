@@ -14,6 +14,12 @@ dist/
 downloads/
 eggs/
 data/
+!data/
+data/*
+!data/rf_augmented/
+data/rf_augmented/*
+!data/rf_augmented/ui_data/
+!data/rf_augmented/ui_data/*
 .eggs/
 lib/
 lib64/
@@ -37,6 +43,39 @@ result
 .vscode/
 source/
 src/pipeline/ml/model
+exploration/
+Explore_Result_comparison/
+
+# Generated data and model artifacts
+*.parquet
+*.csv
+*.json
+*.joblib
+*.ipynb
+*.yaml
+*.docx
+*.pdf
+*.png
+
+# Static Streamlit dashboard exports
+!data/processed/
+!data/processed/geometry.csv
+!data/processed/processed_bending_setup.csv
+!src/pipeline/ml/qrf/results/
+!src/pipeline/ml/qrf/results/models/
+!src/pipeline/ml/qrf/results/models/**/
+!src/pipeline/ml/qrf/results/models/**/test_predictions.csv
+!src/pipeline/ml/qrf/results/models/**/all_group_predictions.csv
+!src/pipeline/ml/qrf/results/models/**/metrics.csv
+!src/pipeline/ml/qrf/results/models/**/metadata.json
+!src/pipeline/ml/hgp/results/
+!src/pipeline/ml/hgp/results/models/
+!src/pipeline/ml/hgp/results/models/**/
+!src/pipeline/ml/hgp/results/models/**/test_predictions.csv
+!src/pipeline/ml/hgp/results/models/**/all_group_predictions.csv
+!src/pipeline/ml/hgp/results/models/**/metrics.csv
+!src/pipeline/ml/hgp/results/models/**/metadata.json
+
 # PyInstaller
 #  Usually these files are written by a python script from a template
 #  before PyInstaller builds the exe, so as to inject date/other infos into it.
@@ -216,3 +255,20 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# Stored thesis results reused by the final QRF/HGP runners
+!src/pipeline/ml/qrf/data/
+!src/pipeline/ml/qrf/data/various_splits.parquet
+!src/pipeline/ml/qrf/data/qrf_hyperparameter_tuning_results.parquet
+!src/pipeline/ml/common/data/
+!src/pipeline/ml/common/data/various_splits.parquet
+!src/pipeline/ml/hgp/data/
+!src/pipeline/ml/hgp/data/hgp_hyperparameter_tuning_results.parquet
+
+# Stored thesis RF feature selection and augmented geometry (reused by 3_1/3_2)
+!src/pipeline/rf_augmentation/result/
+!src/pipeline/rf_augmentation/result/feature_type_rank_*.csv
+!src/pipeline/rf_augmentation/result/bending_feature_rank_*.csv
+!src/pipeline/rf_augmentation/result/greedy_*.csv
+!data/rf_augmented/final_geometry_within_group_interpolation_raw.parquet
+!data/rf_augmented/final_geometry_sensor_augmented_noise__time_wrapping__scaling__jittering.parquet

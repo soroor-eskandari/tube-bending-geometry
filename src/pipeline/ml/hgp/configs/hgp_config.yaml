@@ -1,0 +1,167 @@
+paths:
+  bending_setups: data/rf_augmented/ui_data/unique_bending_setups.csv
+
+  split_metadata: src/pipeline/ml/common/data/various_splits.parquet
+
+  geometry_sources:
+    real: data/processed/geometry.csv
+
+
+data:
+  geometry_source: real
+
+  excluded_experiments:
+    - 1
+    - 48
+    - 166
+
+
+features:
+
+  input_columns:
+    - Angle[degree]ORDistance[mm]
+    - Collet boost
+    - Pressure-die distance
+    - Mandrel retraction timing
+    - Pressure-die boost
+    - Clamp-die lateral position
+    - Mandrel position
+
+  aggregation_columns:
+    - Group_ID
+    - Angle[degree]ORDistance[mm]
+
+  target_columns:
+    main: Main-axis [mm]
+    secondary: Secondary-axis [mm]
+
+
+model:
+
+  confidence_level: 0.9
+
+  random_state: 1100
+
+  optimizer: null
+
+  training_angle_step: null
+
+  angle_selection_tolerance: 1.0e-08
+
+
+  # ==========================================================
+  # Shared noise model
+  # ==========================================================
+
+  noise_kernel: rbf
+
+  noise_gp_alpha: 0.01
+
+  noise_kernel_params:
+
+    initial_length_scale: 3.0
+
+    constant_value: 1.0
+
+    length_scale_bounds:
+      - 0.01
+      - 100.0
+
+    constant_value_bounds:
+      - 0.001
+      - 1000.0
+
+  noise_variance_floor: 0.001
+
+  noise_variance_ceiling: 2.0
+
+  residual_variance_epsilon: 1.0e-08
+
+  noise_min_repeat_count: 2
+
+
+  # ==========================================================
+  # Main
+  # ==========================================================
+
+  main:
+
+    mean_kernel: matern_2.5
+
+    mean_gp_alpha: 0.01
+
+    mean_kernel_params:
+
+      initial_length_scale: 1.5
+
+      constant_value: 1.0
+
+      length_scale_bounds:
+        - 0.01
+        - 100.0
+
+      constant_value_bounds:
+        - 0.001
+        - 1000.0
+
+      feature_length_scales:
+
+        Angle[degree]ORDistance[mm]: 0.7
+
+        Collet boost: 3.0
+
+        Pressure-die distance: 3.0
+
+        Mandrel retraction timing: 3.0
+
+        Pressure-die boost: 3.0
+
+        Clamp-die lateral position: 3.0
+
+        Mandrel position: 3.0
+
+
+  # ==========================================================
+  # Secondary
+  # ==========================================================
+
+  secondary:
+
+    mean_kernel: rbf
+
+    mean_gp_alpha: 0.01
+
+    mean_kernel_params:
+
+      initial_length_scale: 3.0
+
+      constant_value: 1.0
+
+      length_scale_bounds:
+        - 0.01
+        - 100.0
+
+      constant_value_bounds:
+        - 0.001
+        - 1000.0
+
+      feature_length_scales:
+
+        Angle[degree]ORDistance[mm]: 1.5
+
+        Collet boost: 3.0
+
+        Pressure-die distance: 3.0
+
+        Mandrel retraction timing: 3.0
+
+        Pressure-die boost: 3.0
+
+        Clamp-die lateral position: 3.0
+
+        Mandrel position: 3.0
+
+
+  ensemble_enabled: false
+
+  ensemble_cv_splits: 5

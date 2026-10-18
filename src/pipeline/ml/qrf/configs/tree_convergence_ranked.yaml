@@ -1,0 +1,78 @@
+experiment_name: qrf_single_parameter_trend
+
+paths:
+  bending_setups: data/rf_augmented/ui_data/unique_bending_setups.csv
+  split_metadata: src/pipeline/ml/qrf/data/various_splits.parquet
+  geometry_data: data/processed/geometry.csv
+  output_directory: src/pipeline/ml/qrf/results/runs
+
+  geometry_sources:
+    sensor_augmented: data/rf_augmented/final_geometry_sensor_augmented_noise__time_wrapping__scaling__jittering.parquet
+    within_group_interpolation: data/rf_augmented/final_geometry_within_group_interpolation_raw.parquet
+    processed_raw: data/processed/geometry.csv
+
+data:
+  geometry_source: sensor_augmented
+  excluded_experiments: [1, 48, 166]
+
+features:
+  input_columns:
+    - Group_ID
+    - Angle[degree]ORDistance[mm]
+
+  target_columns:
+    main: Main-axis [mm]
+    secondary: Secondary-axis [mm]
+
+# These are the fixed/default values.
+# During each experiment, only one selected parameter changes.
+model:
+  n_estimators: 100
+  max_depth: 20
+  min_samples_leaf: 1
+  min_samples_split: 2
+  max_features: 1.0
+  bootstrap: true
+  random_state: 1100
+  lower_quantile: 0.05
+  upper_quantile: 0.95
+  n_jobs: -1
+
+search:
+  # Only this parameter changes during one notebook execution.
+  varying_parameter: n_estimators
+
+  # Values tested for the selected parameter.
+  parameter_values:
+    - 1
+    - 2
+    - 3
+    - 4
+    - 5
+    - 6
+    - 7
+    - 8
+    - 9
+    - 10
+
+  # run_experiments currently expects this key.
+  # The notebook overwrites it for every individual run.
+  n_estimators:
+    - 100
+
+  axes:
+    - main
+    - secondary
+
+  split_selection:
+    mode: ranked
+    top_n: 3
+    worst_n: 3
+
+    rank_columns:
+      main: qrf_rank_main
+      secondary: qrf_rank_secondary
+
+output:
+  save_predictions: true
+  save_run_artifacts: false

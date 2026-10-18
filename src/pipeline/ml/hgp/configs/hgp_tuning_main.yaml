@@ -1,0 +1,152 @@
+tuning:
+
+  cv_splits: 5
+
+  max_candidates_main: 220
+
+  search_random_state: 1100
+
+
+  coverage_target: 90.0
+
+  minimum_coverage: 75.0
+
+
+  curve_distance_tolerance: 0.01
+
+  trend_tolerance: 0.01
+
+  interval_shape_tolerance: 0.01
+
+  pinaw_tolerance: 0.01
+
+  rmse_tolerance: 0.01
+
+  coverage_tolerance: 1.0
+
+  p10_coverage_tolerance: 1.0
+
+
+  # ==========================================================
+  # MAIN objective
+  # Keep the current Main behavior.
+  # ==========================================================
+
+  main_objective_orders:
+
+    coverage_first:
+
+      - minimum_coverage
+
+      - coverage_error
+
+      - interval_shape_loss
+
+      - curve_distance_norm
+
+      - trend_shape_loss
+
+      - pinaw
+
+      - rmse_norm
+
+      - p10_coverage
+
+
+  # ==========================================================
+  # MAIN parameter grid
+  # ==========================================================
+
+  main_param_grid:
+
+    mean_gp_alpha:
+      - 0.0005
+      - 0.001
+      - 0.005
+      - 0.01
+      - 0.05
+
+    mean_kernel:
+      - matern_1.5
+      - matern_2.5
+      - rbf
+
+    mean_ls_angle:
+      - 0.1
+      - 0.3
+      - 0.7
+      - 1.5
+      - 3.0
+
+    constant_value:
+      - 0.3
+      - 1.0
+      - 3.0
+
+    noise_kernel:
+      - rbf
+      - matern_1.5
+      - matern_2.5
+
+    noise_initial_length_scale:
+      - 0.1
+      - 0.3
+      - 0.7
+      - 1.5
+      - 3.0
+      - 6.0
+
+    noise_gp_alpha:
+      - 0.0005
+      - 0.001
+      - 0.005
+      - 0.01
+      - 0.05
+
+    noise_variance_floor:
+      - 0.00001
+      - 0.0001
+      - 0.001
+      - 0.01
+
+    mean_ls_collet_boost:
+      - 0.3
+      - 0.7
+      - 1.5
+      - 3.0
+      - 6.0
+
+    mean_ls_pressure_die_distance:
+      - 0.3
+      - 0.7
+      - 1.5
+      - 3.0
+      - 6.0
+
+    mean_ls_mandrel_retraction_timing:
+      - 0.3
+      - 0.7
+      - 1.5
+      - 3.0
+      - 6.0
+
+    mean_ls_pressure_die_boost:
+      - 0.3
+      - 0.7
+      - 1.5
+      - 3.0
+      - 6.0
+
+    mean_ls_clamp_die_lateral_position:
+      - 0.3
+      - 0.7
+      - 1.5
+      - 3.0
+      - 6.0
+
+    mean_ls_mandrel_position:
+      - 0.3
+      - 0.7
+      - 1.5
+      - 3.0
+      - 6.0

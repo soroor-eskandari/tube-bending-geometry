@@ -19,15 +19,15 @@ Basic setup with uv
    This creates/updates the local .venv environment and installs the project
    dependencies.
 
-3. Download the raw input data into data/raw/. It is not in git (too large)
-   and is attached to the GitHub release "data-v1":
-
-    uv run python scripts/download_raw_data.py
-
-   This creates:
+3. Raw input data is downloaded automatically. On first run,
+   1_run_data_preprocessor.py downloads the raw experiment data (~800 MB)
+   from the public tube bending dataset (https://github.com/zeyneddinoz/tubebend),
+   verifies its checksum, and copies the committed bending setup groups:
 
     data/raw/experiments_process_and_results.pkl
     data/raw/unique_bending_setups.csv
+
+   Later runs reuse the files if they already exist.
 
 4. Run scripts through uv from the project root, for example:
 
@@ -76,6 +76,7 @@ Purpose:
     Cleans and preprocesses the raw data.
 
 What it does:
+    - Downloads data/raw/experiments_process_and_results.pkl if missing.
     - Uses DataPreprocessPipeline.
     - Reads raw project data from data/.
     - Removes failed experiments:
